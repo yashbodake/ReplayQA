@@ -1,0 +1,11 @@
+node_modules/
+dist/
+artifacts/
+reports/
+*.log
+.env
+.DS_Store
+coverage/
+test-results/
+playwright-report/
+playwright/.cache/

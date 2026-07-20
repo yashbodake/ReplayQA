@@ -1,0 +1,29 @@
+{
+  "name": "replayqa",
+  "version": "0.1.0",
+  "description": "Playwright-based QA framework for collecting execution artifacts and generating HTML reports",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "playwright",
+    "qa",
+    "testing",
+    "artifacts",
+    "reporting"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "^1.45.0",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "playwright": "^1.45.0"
+  }
+}
