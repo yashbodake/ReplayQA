@@ -2,7 +2,6 @@ import { defineConfig, devices } from '@playwright/test';
 import { findConfigSync } from './src/config/index.js';
 
 const replayQAConfig = findConfigSync();
-
 const { artifacts } = replayQAConfig;
 
 export default defineConfig({
