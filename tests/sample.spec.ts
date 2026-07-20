@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../src/runner/index.js';
 
 test.describe('ReplayQA sample tests', () => {
   test('homepage loads with expected title', async ({ page }) => {
@@ -14,4 +14,3 @@ test.describe('ReplayQA sample tests', () => {
     expect(response!.status()).toBe(200);
   });
 });
-

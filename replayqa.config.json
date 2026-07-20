@@ -1,0 +1,15 @@
+{
+  "outputDir": "./artifacts",
+  "artifacts": {
+    "videos": true,
+    "screenshots": true,
+    "traces": true,
+    "consoleLogs": true,
+    "networkLogs": true
+  },
+  "playwright": {
+    "testDir": "./tests",
+    "retries": 0,
+    "workers": "auto"
+  }
+}

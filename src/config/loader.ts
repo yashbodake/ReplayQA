@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { defaultConfig } from './default';
@@ -79,6 +79,41 @@ export async function findConfig(
     const filePath = resolve(cwd, fileName);
     if (existsSync(filePath)) {
       return loadConfigFile(filePath);
+    }
+  }
+
+  return defaultConfig;
+}
+
+export function loadConfigFileSync(filePath: string): ReplayQAConfig {
+  const absolutePath = resolve(filePath);
+
+  if (!existsSync(absolutePath)) {
+    throw new Error(`Config file not found: ${absolutePath}`);
+  }
+
+  if (!absolutePath.endsWith('.json')) {
+    throw new Error(
+      `Synchronous config loading only supports JSON files. Received: ${absolutePath}`
+    );
+  }
+
+  const raw = readFileSync(absolutePath, 'utf-8');
+  const loaded = JSON.parse(raw) as unknown;
+
+  return deepMerge(
+    defaultConfig as unknown as Record<string, unknown>,
+    loaded
+  ) as unknown as ReplayQAConfig;
+}
+
+export function findConfigSync(
+  cwd: string = process.cwd()
+): ReplayQAConfig {
+  for (const fileName of CONFIG_FILE_NAMES) {
+    const filePath = resolve(cwd, fileName);
+    if (existsSync(filePath) && filePath.endsWith('.json')) {
+      return loadConfigFileSync(filePath);
     }
   }
 
