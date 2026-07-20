@@ -2,6 +2,7 @@ export interface ArtifactEntry {
   type: 'video' | 'screenshot' | 'trace' | 'console' | 'network';
   name: string;
   path: string;
+  content?: unknown;
 }
 
 export interface TestReportEntry {

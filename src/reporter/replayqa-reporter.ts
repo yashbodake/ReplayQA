@@ -1,6 +1,6 @@
 import { Reporter, Suite, TestCase, TestResult } from '@playwright/test/reporter';
 import { existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { findConfigSync } from '../config/index.js';
 import { relativePath, sanitizeFileName } from '../utils/path-utils.js';
@@ -35,14 +35,14 @@ export default class ReplayQAReporter implements Reporter {
     return false;
   }
 
-  onTestEnd(test: TestCase, result: TestResult): void {
+  async onTestEnd(test: TestCase, result: TestResult): Promise<void> {
     const projectName = test.parent.project()?.name ?? 'unknown';
     const titlePath = getTestTitlePath(test);
     const testSlug = sanitizeFileName(titlePath.join(' '));
 
     const artifacts: ArtifactEntry[] = [
       ...this.mapAttachments(result),
-      ...this.mapLogFiles(projectName, testSlug),
+      ...(await this.mapLogFiles(projectName, testSlug)),
     ];
 
     this.tests.push({
@@ -121,29 +121,45 @@ export default class ReplayQAReporter implements Reporter {
     return artifacts;
   }
 
-  private mapLogFiles(
+  private async mapLogFiles(
     projectName: string,
     testSlug: string
-  ): ArtifactEntry[] {
+  ): Promise<ArtifactEntry[]> {
     const artifacts: ArtifactEntry[] = [];
     const logDir = resolve(this.outputDir, 'logs', projectName, testSlug);
     const reportDir = this.reportDir;
 
     const consolePath = resolve(logDir, 'console.json');
     if (existsSync(consolePath)) {
+      let content: unknown = null;
+      try {
+        const raw = await readFile(consolePath, 'utf-8');
+        content = JSON.parse(raw);
+      } catch {
+        // leave content null
+      }
       artifacts.push({
         type: 'console',
         name: 'console.json',
         path: relativePath(reportDir, consolePath),
+        content,
       });
     }
 
     const networkPath = resolve(logDir, 'network.json');
     if (existsSync(networkPath)) {
+      let content: unknown = null;
+      try {
+        const raw = await readFile(networkPath, 'utf-8');
+        content = JSON.parse(raw);
+      } catch {
+        // leave content null
+      }
       artifacts.push({
         type: 'network',
         name: 'network.json',
         path: relativePath(reportDir, networkPath),
+        content,
       });
     }
 
