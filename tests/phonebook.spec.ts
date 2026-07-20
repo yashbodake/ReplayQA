@@ -2,6 +2,15 @@ import { test, expect } from '../src/runner/index.js';
 
 const BASE_URL = 'https://phone-book-yrap.vercel.app/';
 
+function uniqueId() {
+  return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function uniquePhone() {
+  const rand = Math.floor(Math.random() * 9000000000) + 1000000000;
+  return `${rand}`;
+}
+
 async function registerUser(page, username, email, password) {
   await page.goto(BASE_URL);
   await page.getByRole('link', { name: /sign up/i }).click();
@@ -91,7 +100,7 @@ async function logout(page) {
 
 test.describe('Phonebook Pro - Auth Flow', () => {
   test('should register a new user and redirect to contacts', async ({ page }) => {
-    const username = `test_${Date.now()}`;
+    const username = `test_${uniqueId()}`;
     const email = `${username}@test.com`;
     await registerUser(page, username, email, 'Test123!');
     // Verify we're on contacts page by checking for navbar
@@ -100,7 +109,7 @@ test.describe('Phonebook Pro - Auth Flow', () => {
 
   test('should login with existing user', async ({ page }) => {
     // First register a user
-    const username = `test_${Date.now()}`;
+    const username = `test_${uniqueId()}`;
     const email = `${username}@test.com`;
     await registerUser(page, username, email, 'Test123!');
     await logout(page);
@@ -115,13 +124,13 @@ test.describe('Phonebook Pro - Contact CRUD', () => {
   let username;
 
   test.beforeEach(async ({ page }) => {
-    username = `test_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    username = `test_${uniqueId()}`;
     const email = `${username}@test.com`;
     await registerUser(page, username, email, 'Test123!');
   });
 
   test('should add a new contact', async ({ page }) => {
-    const phone = `${Date.now()}`.slice(-10);
+    const phone = uniquePhone();
     await addContact(page, {
       name: 'John Doe',
       phone,
@@ -133,7 +142,7 @@ test.describe('Phonebook Pro - Contact CRUD', () => {
   });
 
   test('should search contacts by name', async ({ page }) => {
-    const phone = `${Date.now()}`.slice(-10);
+    const phone = uniquePhone();
     await addContact(page, {
       name: 'Alice Search',
       phone,
@@ -145,7 +154,7 @@ test.describe('Phonebook Pro - Contact CRUD', () => {
   });
 
   test('should edit a contact', async ({ page }) => {
-    const phone = `${Date.now()}`.slice(-10);
+    const phone = uniquePhone();
     await addContact(page, {
       name: 'Bob Edit',
       phone,
@@ -156,7 +165,7 @@ test.describe('Phonebook Pro - Contact CRUD', () => {
   });
 
   test('should delete a contact', async ({ page }) => {
-    const phone = `${Date.now()}`.slice(-10);
+    const phone = uniquePhone();
     await addContact(page, {
       name: 'Charlie Delete',
       phone,
@@ -169,9 +178,9 @@ test.describe('Phonebook Pro - Contact CRUD', () => {
 
 test.describe('Phonebook Pro - Full Flow', () => {
   test('complete user journey: register, add, search, edit, delete, logout', async ({ page }) => {
-    const username = `test_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const username = `test_${uniqueId()}`;
     const email = `${username}@test.com`;
-    const phone = `${Date.now()}`.slice(-10);
+    const phone = uniquePhone();
     
     // Register
     await registerUser(page, username, email, 'Test123!');

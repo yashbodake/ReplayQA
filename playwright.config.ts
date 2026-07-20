@@ -9,6 +9,7 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : replayQAConfig.playwright.retries,
+  timeout: 60000,
   workers: replayQAConfig.playwright.workers === 'auto'
     ? undefined
     : replayQAConfig.playwright.workers,
@@ -22,6 +23,8 @@ export default defineConfig({
     trace: artifacts.traces ? 'on' : 'off',
     screenshot: artifacts.screenshots ? 'on' : 'off',
     video: artifacts.videos ? 'on' : 'off',
+    launchOptions: { slowMo: 400 },
+    actionTimeout: 15000,
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
