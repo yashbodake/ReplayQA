@@ -12,7 +12,10 @@ export default defineConfig({
   workers: replayQAConfig.playwright.workers === 'auto'
     ? undefined
     : replayQAConfig.playwright.workers,
-  reporter: 'list',
+  reporter: [
+    ['list'],
+    ['./src/reporter/replayqa-reporter.ts'],
+  ],
   outputDir: `${replayQAConfig.outputDir}/test-output`,
   use: {
     baseURL: process.env.BASE_URL || 'https://phone-book-yrap.vercel.app/',

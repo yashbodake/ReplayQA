@@ -2,6 +2,7 @@ import { test as baseTest, expect } from '@playwright/test';
 import { resolve } from 'node:path';
 import { attachConsoleCollector, attachNetworkCollector } from '../collectors/index.js';
 import { findConfig, ReplayQAConfig } from '../config/index.js';
+import { sanitizeFileName } from '../utils/path-utils.js';
 
 let cachedConfig: ReplayQAConfig | undefined;
 
@@ -10,14 +11,6 @@ async function getConfig(): Promise<ReplayQAConfig> {
     cachedConfig = await findConfig();
   }
   return cachedConfig;
-}
-
-function sanitizeFileName(input: string): string {
-  return input
-    .replace(/[^a-zA-Z0-9\-_]/g, '_')
-    .replace(/_{2,}/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 80);
 }
 
 export const test = baseTest.extend<{
