@@ -7,6 +7,7 @@ import { isLogoutLabel } from '../collector/index.js';
 import { hasLoginForm, loginAndVerify, LoginFailedError } from '../login/index.js';
 import { buildContext } from './context.js';
 import { runProbes, TransitionGraphBuilder } from '../probes/index.js';
+import { buildJourneys, renderFlowReport } from '../flow/index.js';
 import type { DiscoveryOptions } from './phases.js';
 
 const DEFAULT_MAX_PAGES = 8;
@@ -46,6 +47,7 @@ export async function runDiscovery(
   const maxProbesPerState = options.maxProbesPerState ?? DEFAULT_MAX_PROBES_PER_STATE;
   const pages: DiscoveredPage[] = [];
   const exploredStates = new Set<string>();
+  const probedStates = new Set<string>();
   const graph = new TransitionGraphBuilder();
   const phase = options.onPhase;
 
@@ -56,7 +58,8 @@ export async function runDiscovery(
    */
   const captureAndAdd = async (): Promise<{ state: State; isNew: boolean }> => {
     const state = await ctx.stateManager.capture();
-    graph.addNode(state, state.url);
+    const label = state.snapshot.heading || state.url.split('/').pop() || state.url;
+    graph.addNode(state, label);
     if (exploredStates.has(state.id)) return { state, isNew: false };
     exploredStates.add(state.id);
     pages.push(toDiscoveredPage(state, pages.length + 1));
@@ -64,9 +67,11 @@ export async function runDiscovery(
     return { state, isNew: true };
   };
 
-  /** Probe safe action buttons from a base state. */
+  /** Probe safe action buttons from a base state (only once per state). */
   const probeFrom = async (baseState: State, baseUrl: string): Promise<void> => {
     if (pages.length >= maxPages) return;
+    if (probedStates.has(baseState.id)) return; // already probed — skip duplicates
+    probedStates.add(baseState.id);
     try {
       await runProbes({
         controller: ctx.controller,
@@ -145,9 +150,16 @@ export async function runDiscovery(
     await ctx.controller.close();
   }
 
-  // Persist the transition graph (edges + skipped actions w/ reasons).
+  // Persist the transition graph (edges with observed changes + skipped actions).
   const graphFile = resolve(ctx.outputDir, 'graph.json');
   writeFileSync(graphFile, JSON.stringify(graph.graph, null, 2) + '\n', 'utf-8');
+
+  // Build + persist journeys and the flow report.
+  const journeys = buildJourneys(graph.graph);
+  writeFileSync(resolve(ctx.outputDir, 'flow-graph.json'), JSON.stringify(graph.graph, null, 2) + '\n', 'utf-8');
+  writeFileSync(resolve(ctx.outputDir, 'journeys.json'), JSON.stringify(journeys, null, 2) + '\n', 'utf-8');
+  const flowHtml = renderFlowReport(graph.graph, journeys, targetUrl);
+  writeFileSync(resolve(ctx.outputDir, 'flow-report.html'), flowHtml, 'utf-8');
 
   return {
     application: { url: targetUrl },

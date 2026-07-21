@@ -14,6 +14,10 @@ export interface Observations {
   discoveredPages: unknown[];
   exploredStates: Array<{ stateId: string; url: string; capturedAt?: string }>;
   findings: unknown[];
+  /** Observed state transitions with changes — NEW in v0.5 (flow discovery). */
+  flowGraph?: { nodes: unknown[]; edges: unknown[]; skipped: unknown[] };
+  /** Complete user journeys extracted from the flow graph — NEW in v0.5. */
+  journeys?: unknown[];
 }
 
 /**
@@ -69,7 +73,17 @@ export async function loadObservations(artifactsDir: string): Promise<Observatio
     discoveredPages: discovery.pages ?? [],
     exploredStates,
     findings,
+    flowGraph: (await loadJsonSafe(join(artifactsDir, 'flow-graph.json'))) as Observations['flowGraph'],
+    journeys: ((await loadJsonSafe(join(artifactsDir, 'journeys.json'))) as unknown[]) ?? undefined,
   };
+}
+
+async function loadJsonSafe(filePath: string): Promise<unknown | undefined> {
+  try {
+    return JSON.parse(await readFile(filePath, 'utf-8'));
+  } catch {
+    return undefined;
+  }
 }
 
 async function readdirSafe(dir: string): Promise<string[]> {

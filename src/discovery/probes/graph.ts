@@ -35,8 +35,8 @@ export class TransitionGraphBuilder {
   }
 
   /** Record a successful probe: from --action--> to. */
-  addEdge(from: string, action: string, to: string): void {
-    this._edges.push({ from, action, to, via: 'probe' });
+  addEdge(from: string, action: string, to: string, changes: string[] = []): void {
+    this._edges.push({ from, action, to, via: 'probe', changes });
   }
 
   /** Record an action that was considered and skipped (destructive / unknown). */

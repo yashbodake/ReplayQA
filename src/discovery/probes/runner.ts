@@ -5,6 +5,7 @@ import type { State } from '../models/state.js';
 import type { ProbeCandidate, ProbeHooks, RunProbesOptions } from './types.js';
 import { classifyAction } from './vocabulary.js';
 import type { TransitionGraphBuilder } from './graph.js';
+import { computeChanges } from '../flow/snapshot-diff.js';
 
 export interface RunProbesArgs {
   controller: BrowserController;
@@ -83,9 +84,10 @@ export async function runProbes(args: RunProbesArgs): Promise<{
     const { state: probedState, isNew } = await args.hooks.captureAndAdd();
 
     if (probedState.id !== args.baseState.id) {
-      args.graph.addEdge(args.baseState.id, candidate.label, probedState.id);
+      const changes = computeChanges(args.baseState.snapshot, probedState.snapshot);
+      args.graph.addEdge(args.baseState.id, candidate.label, probedState.id, changes);
       args.logger?.info(
-        `probe: "${candidate.label}" → new state ${probedState.id}${isNew ? ' (registered)' : ''}`
+        `probe: "${candidate.label}" → new state ${probedState.id}${isNew ? ' (registered)' : ''}${changes.length ? ` [${changes.length} changes]` : ''}`
       );
       if (isNew) newlyRegistered++;
     } else {

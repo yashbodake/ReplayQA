@@ -24,10 +24,12 @@ export interface ActionClassification {
 }
 
 export interface TransitionEdge {
-  from: string; // stateId
-  to: string; // stateId
-  action: string; // button label that triggered the transition
+  from: string;
+  to: string;
+  action: string;
   via: 'probe';
+  /** Human-readable descriptions of what changed (buttons appeared, form opened, etc.). */
+  changes: string[];
 }
 
 export interface SkippedAction {
