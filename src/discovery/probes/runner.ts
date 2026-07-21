@@ -3,7 +3,7 @@ import type { StateManager } from '../state/manager.js';
 import type { Logger } from '../core/logger.js';
 import type { State } from '../models/state.js';
 import type { ProbeCandidate, ProbeHooks, RunProbesOptions } from './types.js';
-import { classifyAction } from './vocabulary.js';
+import { classifyAction, classifyInput } from './vocabulary.js';
 import type { TransitionGraphBuilder } from './graph.js';
 import { computeChanges } from '../flow/snapshot-diff.js';
 
@@ -54,31 +54,70 @@ export async function runProbes(args: RunProbesArgs): Promise<{
   for (const candidate of candidates) {
     if (probed >= max) break;
 
-    const verdict = classifyAction(candidate.label);
-    if (verdict.classification !== 'probe') {
-      args.graph.addSkipped(
-        args.baseState.id,
-        candidate.label,
-        verdict.classification,
-        verdict.reason
-      );
-      args.logger?.info(
-        `probe: skip "${candidate.label}" (${verdict.classification}) — ${verdict.reason}`
-      );
-      continue;
-    }
+    // --- Classify + interact by candidate type ---
+    let probedOK = false;
 
-    try {
-      const clicked = await args.controller.click(candidate.selector);
-      if (!clicked) {
-        args.logger?.info(`probe: "${candidate.label}" not found at base — skipping`);
+    if (candidate.type === 'input') {
+      // Text input: classify by purpose; if safe, type a placeholder + Enter.
+      const input = classifyInput(candidate.label);
+      if (!input.safe) {
+        args.graph.addSkipped(args.baseState.id, candidate.label, 'unknown', input.reason);
+        args.logger?.info(`probe: skip input "${candidate.label}" — ${input.reason}`);
         continue;
       }
-      await args.controller.waitForStable();
-    } catch (error) {
-      args.logger?.warn(`probe: click "${candidate.label}" threw — ${errMsg(error)}`);
-      continue;
+      try {
+        await args.controller.fill(candidate.selector, input.placeholder).catch(() => undefined);
+        await args.controller.pressEnter(candidate.selector);
+        await args.controller.waitForStable();
+        probedOK = true;
+      } catch (error) {
+        args.logger?.warn(`probe: type+Enter "${candidate.label}" threw — ${errMsg(error)}`);
+        continue;
+      }
+    } else if (candidate.type === 'tab' || candidate.type === 'expander') {
+      // Tabs and expanders are always safe to toggle.
+      try {
+        const clicked = await args.controller.click(candidate.selector);
+        if (!clicked) {
+          args.logger?.info(`probe: "${candidate.label}" (${candidate.type}) not found — skipping`);
+          continue;
+        }
+        await args.controller.waitForStable();
+        probedOK = true;
+      } catch (error) {
+        args.logger?.warn(`probe: click "${candidate.label}" (${candidate.type}) threw — ${errMsg(error)}`);
+        continue;
+      }
+    } else {
+      // Buttons and links: classify under the vocabulary safety policy.
+      const verdict = classifyAction(candidate.label);
+      // For LINKS: skip only if destructive. Non-destructive links (product
+      // details, content links) are safe to probe even without an action verb —
+      // they're already filtered for same-origin + non-nav in currentActions().
+      // For BUTTONS: require matching a PROBE_PATTERN (conservative).
+      const shouldProbe = candidate.type === 'link'
+        ? verdict.classification !== 'destructive'
+        : verdict.classification === 'probe';
+      if (!shouldProbe) {
+        args.graph.addSkipped(args.baseState.id, candidate.label, verdict.classification as 'destructive' | 'unknown', verdict.reason);
+        args.logger?.info(`probe: skip "${candidate.label}" (${candidate.type}/${verdict.classification}) — ${verdict.reason}`);
+        continue;
+      }
+      try {
+        const clicked = await args.controller.click(candidate.selector);
+        if (!clicked) {
+          args.logger?.info(`probe: "${candidate.label}" not found at base — skipping`);
+          continue;
+        }
+        await args.controller.waitForStable();
+        probedOK = true;
+      } catch (error) {
+        args.logger?.warn(`probe: click "${candidate.label}" threw — ${errMsg(error)}`);
+        continue;
+      }
     }
+
+    if (!probedOK) continue;
 
     // Capture the probed state. (StateManager persists it if new; hooks register it in pages.)
     const { state: probedState, isNew } = await args.hooks.captureAndAdd();
@@ -91,7 +130,7 @@ export async function runProbes(args: RunProbesArgs): Promise<{
       );
       if (isNew) newlyRegistered++;
     } else {
-      args.graph.addSkipped(args.baseState.id, candidate.label, 'unknown', 'no state change after click');
+      args.graph.addSkipped(args.baseState.id, candidate.label, 'unknown', `no state change after ${candidate.type} interaction`);
     }
     probed++;
 
@@ -99,6 +138,17 @@ export async function runProbes(args: RunProbesArgs): Promise<{
     // starts from base. Try Escape, then a Close/Cancel/× button. NEVER reload
     // — a reload would reset in-memory SPA auth and log the session out.
     await dismissOverlay(args.controller);
+
+    // If the probe caused a NAVIGATION (URL drifted, e.g. to a product detail
+    // page), navigate back to the base URL so subsequent probes start clean.
+    if (!sameUrl(args.controller.currentUrl(), args.baseUrl)) {
+      try {
+        await args.controller.goto(args.baseUrl, { timeout: 20000 });
+        await args.controller.waitForStable();
+      } catch {
+        /* best-effort */
+      }
+    }
   }
 
   return { probed, newlyRegistered };
@@ -122,4 +172,14 @@ async function dismissOverlay(controller: BrowserController): Promise<void> {
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+function sameUrl(a: string, b: string): boolean {
+  try {
+    const ua = new URL(a);
+    const ub = new URL(b);
+    return ua.origin + ua.pathname + ua.search === ub.origin + ub.pathname + ub.search;
+  } catch {
+    return a === b;
+  }
 }

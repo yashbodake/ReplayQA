@@ -280,15 +280,22 @@ export class BrowserController {
   }
 
   /**
-   * Visible action buttons (`<button>`, `[role="button"]`), deduped by label.
-   * Distinct from `currentNavLinks()` (which returns anchors): these are the
-   * page's ACTION surface — the candidates the Action Probe system considers
-   * for opening modals / forms / drawers / tabs. Label falls back to
-   * aria-label / title so icon buttons are included.
+   * Enumerate ALL visible interactive elements on the page, tagged by type:
+   * buttons, action-links, text-inputs, tabs, and expanders. Deduped by
+   * label within each type. This generalizes the old button-only enumeration
+   * so the probe system can discover interactions regardless of HTML tag.
    */
   async currentActions(): Promise<ActionCandidate[]> {
     const page = this.requirePage();
-    const labels = await page.evaluate((): string[] => {
+    const raw = await page.evaluate((): Array<{
+      label: string;
+      type: string;
+      role?: string;
+      name?: string;
+      placeholder?: string;
+      labelText?: string;
+      css?: string;
+    }> => {
       const isVisible = (el: Element): boolean => {
         const rect = el.getBoundingClientRect();
         const style = getComputedStyle(el);
@@ -300,27 +307,90 @@ export class BrowserController {
         );
       };
       const seen = new Set<string>();
-      const out: string[] = [];
+      const out: Array<{ label: string; type: string; role?: string; name?: string; placeholder?: string; labelText?: string; css?: string }> = [];
+      const push = (entry: typeof out[0]) => {
+        const key = `${entry.type}:${entry.label}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          out.push(entry);
+        }
+      };
+
+      // 1. Buttons (<button>, [role="button"])
       document.querySelectorAll('button, [role="button"]').forEach((el) => {
         if (!isVisible(el)) return;
-        const label =
-          (el.textContent || '').trim() ||
-          el.getAttribute('aria-label') ||
-          el.getAttribute('title') ||
-          '';
-        // Keep the label short + comparable (avoid capturing an entire card).
+        const label = (el.textContent || '').trim() || el.getAttribute('aria-label') || el.getAttribute('title') || '';
         const clean = label.split('\n')[0].trim().slice(0, 80);
-        if (clean && !seen.has(clean)) {
-          seen.add(clean);
-          out.push(clean);
-        }
+        if (clean) push({ label: clean, type: 'button', role: 'button', name: clean });
       });
+
+      // 2. Action Links (<a> NOT in nav landmarks, NOT external/download/mailto)
+      document.querySelectorAll('a[href]').forEach((el) => {
+        if (!isVisible(el)) return;
+        if (el.closest('nav, [role="navigation"]')) return; // nav links handled separately
+        const href = el.getAttribute('href') || '';
+        if (/^(javascript:|mailto:|tel:)/i.test(href)) return;
+        // Note: href="#" is NOT filtered — SPA apps (SauceDemo, React Router)
+        // use href="#" with click handlers for in-app navigation.
+        try {
+          const url = new URL((el as HTMLAnchorElement).href);
+          if (url.origin !== location.origin) return; // external
+        } catch { return; }
+        const label = (el.textContent || '').trim() || el.getAttribute('aria-label') || '';
+        const clean = label.split('\n')[0].trim().slice(0, 80);
+        if (clean) push({ label: clean, type: 'link', role: 'link', name: clean });
+      });
+
+      // 3. Text Inputs (text/search/textarea, not password/readonly/disabled)
+      document.querySelectorAll('input:not([type="password"]):not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="submit"]):not([type="button"]):not([type="image"]):not([type="range"]):not([type="color"]):not([type="date"]):not([type="time"]):not([type="datetime-local"]):not([type="month"]):not([type="week"]), textarea').forEach((el) => {
+        if (!isVisible(el)) return;
+        if (el.getAttribute('readonly') || el.getAttribute('disabled')) return;
+        const ph = el.getAttribute('placeholder') || '';
+        const aria = el.getAttribute('aria-label') || '';
+        const name = el.getAttribute('name') || '';
+        const id = el.getAttribute('id') || '';
+        const label = ph || aria || name || id || 'text input';
+        const clean = label.slice(0, 60);
+        if (ph) push({ label: clean, type: 'input', placeholder: ph });
+        else if (aria) push({ label: clean, type: 'input', labelText: aria });
+        else if (id) push({ label: clean, type: 'input', css: `#${id}` });
+        else if (name) push({ label: clean, type: 'input', css: `input[name="${name}"]` });
+      });
+
+      // 4. Tabs ([role="tab"])
+      document.querySelectorAll('[role="tab"]').forEach((el) => {
+        if (!isVisible(el)) return;
+        if (el.getAttribute('aria-selected') === 'true') return; // already active
+        const label = (el.textContent || '').trim() || el.getAttribute('aria-label') || 'tab';
+        push({ label, type: 'tab', role: 'tab', name: label });
+      });
+
+      // 5. Expanders (details > summary, [aria-expanded], [aria-controls])
+      document.querySelectorAll('details > summary, [aria-expanded], [aria-controls]').forEach((el) => {
+        if (!isVisible(el)) return;
+        const expanded = el.getAttribute('aria-expanded');
+        if (expanded === 'true') return; // already expanded
+        const label = (el.textContent || '').trim() || el.getAttribute('aria-label') || 'expander';
+        const clean = label.split('\n')[0].trim().slice(0, 60);
+        if (clean) push({ label: clean, type: 'expander', role: 'button', name: clean });
+      });
+
       return out;
     });
-    return labels.map((label) => ({
-      label,
-      selector: { role: 'button', name: label },
-    }));
+
+    return raw.map((r) => {
+      let selector: import('./selector.js').Selector;
+      if (r.role) selector = { role: r.role, name: r.name };
+      else if (r.placeholder) selector = { placeholder: r.placeholder };
+      else if (r.labelText) selector = { label: r.labelText };
+      else if (r.css) selector = r.css;
+      else selector = r.label;
+      return {
+        label: r.label,
+        selector,
+        type: r.type as ActionCandidate['type'],
+      };
+    });
   }
 
   /** Press Escape — used by the probe runner to dismiss modals/drawers. */
@@ -345,9 +415,16 @@ export class BrowserController {
     if (typeof selector === 'string') {
       return page.locator(selector).first();
     }
-    return page.getByRole(selector.role as AriaRole, {
-      name: selector.name,
-    }).first();
+    if ('role' in selector) {
+      return page.getByRole(selector.role as AriaRole, { name: selector.name }).first();
+    }
+    if ('placeholder' in selector) {
+      return page.getByPlaceholder(selector.placeholder).first();
+    }
+    if ('label' in selector) {
+      return page.getByLabel(selector.label).first();
+    }
+    return page.locator('body').first();
   }
 
   private clickOptions(options: { timeout?: number }):

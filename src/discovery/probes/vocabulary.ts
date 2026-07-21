@@ -96,3 +96,37 @@ export function classifyAction(label: string): ActionClassification {
     reason: 'label is not a recognized open/expand action — skipped (conservative)',
   };
 }
+
+export interface InputClassification {
+  safe: boolean;
+  placeholder: string;
+  reason: string;
+}
+
+/** Sensitive input keywords — NEVER probed. */
+const SENSITIVE_INPUT_RE = /\b(password|secret|token|api\s?key|pin|cvv|card|credit|ssn|social\ssecurity)\b/i;
+
+/**
+ * Classify a text input by its label/placeholder and return a safe placeholder
+ * value if the input is safe to probe (type + Enter). Sensitive inputs
+ * (passwords, tokens, payment fields) are NEVER probed.
+ */
+export function classifyInput(label: string): InputClassification {
+  const l = label.toLowerCase();
+
+  if (SENSITIVE_INPUT_RE.test(l)) {
+    return { safe: false, placeholder: '', reason: 'sensitive input — never probed' };
+  }
+  if (/\b(search|filter|find|query)\b/.test(l)) {
+    return { safe: true, placeholder: 'test', reason: 'search/filter input — probing with "test"' };
+  }
+  if (/\b(add|new|create|todo|task|item|note|name|what|enter|type|your|message|comment|description|title)\b/.test(l)) {
+    return { safe: true, placeholder: 'ReplayQA Probe Item', reason: 'create/add input — probing with disposable value' };
+  }
+  if (/\bemail|e-mail\b/.test(l)) {
+    return { safe: true, placeholder: 'probe@test.example', reason: 'email input — probing with disposable address' };
+  }
+  // Default: non-sensitive text inputs are probed with a generic disposable value.
+  // Worst case: no state change → recorded as no-effect.
+  return { safe: true, placeholder: 'ReplayQA Probe', reason: 'non-sensitive text input — probing with disposable value' };
+}

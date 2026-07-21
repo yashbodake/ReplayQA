@@ -1,4 +1,4 @@
-import type { Selector } from '../browser/selector.js';
+import type { Selector, InteractionType } from '../browser/selector.js';
 import type { State } from '../models/state.js';
 
 /**
@@ -13,6 +13,7 @@ import type { State } from '../models/state.js';
 export interface ProbeCandidate {
   label: string;
   selector: Selector;
+  type: InteractionType;
 }
 
 export type SafetyClassification = 'probe' | 'destructive' | 'unknown';
