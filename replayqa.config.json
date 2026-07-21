@@ -11,5 +11,12 @@
     "testDir": "./tests",
     "retries": 0,
     "workers": "auto"
+  },
+  "discovery": {
+    "targetUrl": "https://phone-book-yrap.vercel.app/",
+    "credentials": {
+      "username": "${REPLAYQA_DISCOVERY_USERNAME}",
+      "password": "${REPLAYQA_DISCOVERY_PASSWORD}"
+    }
   }
 }

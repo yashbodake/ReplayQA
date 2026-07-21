@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>State Lab — Auth App</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; }
+    .error { color: #dc2626; font-size: 13px; margin: 8px 0; }
+    nav a { margin-right: 12px; }
+    ul { list-style: none; padding: 0; }
+    li { padding: 6px 0; border-bottom: 1px solid #eee; }
+    [hidden] { display: none !important; }
+    #modal { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; }
+    #modal .sheet { background: #fff; padding: 20px; border-radius: 8px; min-width: 320px; }
+    label { display: block; margin: 6px 0; }
+  </style>
+</head>
+<body>
+  <!-- LOGIN VIEW -->
+  <section id="view-login">
+    <h2>Welcome back</h2>
+    <p>Sign in to manage your contacts.</p>
+    <form id="login-form">
+      <label>Username <input id="loginUsername" type="text" name="username" /></label>
+      <label>Password <input id="loginPassword" type="password" name="password" /></label>
+      <button type="submit">Sign In</button>
+    </form>
+    <p id="loginError" class="error" hidden>Invalid username or password.</p>
+  </section>
+
+  <!-- AUTHENTICATED APP -->
+  <section id="view-app" hidden>
+    <nav>
+      <a href="#" data-nav="contacts">Contacts</a>
+      <button id="logout">Logout</button>
+    </nav>
+    <h1>My Contacts</h1>
+    <input type="search" id="search" placeholder="Search contacts" aria-label="Search contacts" />
+    <button id="add" aria-label="Add contact">Add Contact</button>
+    <ul id="list">
+      <li><button class="edit">Edit</button> <span class="name">Alice</span></li>
+      <li><button class="edit">Edit</button> <span class="name">Bob</span></li>
+    </ul>
+  </section>
+
+  <!-- ADD CONTACT MODAL -->
+  <div id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" hidden>
+    <div class="sheet">
+      <h2 id="modal-title">Add Contact</h2>
+      <form id="add-form">
+        <label>Name <input name="name" /></label>
+        <button type="submit">Save</button>
+      </form>
+      <button id="close">Close</button>
+    </div>
+  </div>
+
+  <script>
+    const VALID = { username: 'admin', password: 'secret' };
+    let authed = false;
+
+    const loginView = document.getElementById('view-login');
+    const appView = document.getElementById('view-app');
+
+    // --- LOGIN ---
+    document.getElementById('login-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const u = document.getElementById('loginUsername').value;
+      const p = document.getElementById('loginPassword').value;
+      if (u === VALID.username && p === VALID.password) {
+        authed = true;
+        loginView.hidden = true;
+        appView.hidden = false;
+        document.getElementById('loginError').hidden = true;
+      } else {
+        document.getElementById('loginError').hidden = false;
+      }
+    });
+
+    // --- LOGOUT ---
+    document.getElementById('logout').addEventListener('click', () => {
+      authed = false;
+      appView.hidden = true;
+      loginView.hidden = false;
+    });
+
+    // --- SEARCH (client-side filter) ---
+    document.getElementById('search').addEventListener('input', () => {
+      const q = document.getElementById('search').value.toLowerCase();
+      document.querySelectorAll('#list li').forEach((li) => {
+        const name = li.querySelector('.name').textContent.toLowerCase();
+        li.style.display = name.includes(q) ? '' : 'none';
+      });
+    });
+
+    // --- ADD CONTACT (modal + working create) ---
+    document.getElementById('add').addEventListener('click', () => {
+      document.getElementById('modal').hidden = false;
+    });
+    document.getElementById('close').addEventListener('click', () => {
+      document.getElementById('modal').hidden = true;
+    });
+    document.getElementById('add-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const input = e.currentTarget.querySelector('input[name="name"]');
+      const name = (input.value || '').trim();
+      if (!name) return;
+      const li = document.createElement('li');
+      li.innerHTML = '<button class="edit">Edit</button> <span class="name">' + name.replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])) + '</span>';
+      document.getElementById('list').appendChild(li);
+      input.value = '';
+      document.getElementById('modal').hidden = true;
+    });
+  </script>
+</body>
+</html>

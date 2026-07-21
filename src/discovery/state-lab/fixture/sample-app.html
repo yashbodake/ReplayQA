@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>State Lab Fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; }
+    nav a { margin-right: 12px; }
+    ul { list-style: none; padding: 0; }
+    li { padding: 6px 0; border-bottom: 1px solid #eee; }
+    [hidden] { display: none !important; }
+    #modal { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; }
+    #modal .sheet { background: #fff; padding: 20px; border-radius: 8px; min-width: 320px; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="#home" data-nav>Home</a>
+    <a href="#list" data-nav>Contacts</a>
+  </nav>
+
+  <main>
+    <!-- Home view -->
+    <section id="view-home">
+      <h1>Home</h1>
+      <p>Welcome to the State Lab fixture.</p>
+    </section>
+
+    <!-- Contacts list view -->
+    <section id="view-list" hidden>
+      <h1>Contacts</h1>
+      <input type="search" id="search" placeholder="Search contacts" aria-label="Search contacts" />
+      <button id="add" aria-label="Add contact">Add Contact</button>
+      <button id="toggle-tab" aria-pressed="false">Show Favourites</button>
+      <ul id="list">
+        <li><button class="edit">Edit</button> <span class="name">Alice</span></li>
+        <li><button class="edit">Edit</button> <span class="name">Bob</span></li>
+        <li><button class="edit">Edit</button> <span class="name">Charlie</span></li>
+        <li><button class="edit">Edit</button> <span class="name">Dana</span></li>
+      </ul>
+    </section>
+  </main>
+
+  <!-- Modal (hidden until "Add Contact" is clicked) -->
+  <div id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" hidden>
+    <div class="sheet">
+      <h2 id="modal-title">Add Contact</h2>
+      <form id="add-form">
+        <p><label>Name <input name="name" /></label></p>
+        <p><button type="submit">Save</button></p>
+      </form>
+      <button id="close">Close</button>
+    </div>
+  </div>
+
+  <script>
+    // Hash routing: show one view at a time.
+    function route() {
+      const r = (location.hash || '#home').slice(1);
+      document.getElementById('view-home').hidden = r !== 'home';
+      document.getElementById('view-list').hidden = r !== 'list';
+    }
+    window.addEventListener('hashchange', route);
+    route();
+
+    // Search: hide non-matching list items (client-side filter, NO url change).
+    const search = document.getElementById('search');
+    search.addEventListener('input', () => {
+      const q = search.value.toLowerCase();
+      document.querySelectorAll('#list li').forEach((li) => {
+        const name = li.querySelector('.name').textContent.toLowerCase();
+        li.style.display = name.includes(q) ? '' : 'none';
+      });
+    });
+
+    // Modal open/close.
+    document.getElementById('add').addEventListener('click', () => {
+      document.getElementById('modal').hidden = false;
+    });
+    document.getElementById('close').addEventListener('click', () => {
+      document.getElementById('modal').hidden = true;
+    });
+
+    // Create contact: append a row on submit, then close the modal. Makes the
+    // fixture a real working CRUD app so generated create-tests actually pass.
+    const escapeHtml = (s) => s.replace(/[&<>"']/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    document.getElementById('add-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const input = e.currentTarget.querySelector('input[name="name"]');
+      const name = (input.value || '').trim();
+      if (!name) return; // required-field enforcement
+      const li = document.createElement('li');
+      li.innerHTML = '<button class="edit">Edit</button> <span class="name">' + escapeHtml(name) + '</span>';
+      document.getElementById('list').appendChild(li);
+      input.value = '';
+      document.getElementById('modal').hidden = true;
+    });
+
+    // Tab toggle: flips a button's aria-pressed without changing structure elsewhere
+    // (used to test whether strategies notice pure state-flag changes).
+    document.getElementById('toggle-tab').addEventListener('click', (e) => {
+      const b = e.currentTarget;
+      const on = b.getAttribute('aria-pressed') === 'true';
+      b.setAttribute('aria-pressed', String(!on));
+    });
+  </script>
+</body>
+</html>

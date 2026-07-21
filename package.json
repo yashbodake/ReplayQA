@@ -8,6 +8,13 @@
     "test": "playwright test",
     "test:headed": "playwright test --headed",
     "replay": "npx tsx src/cli/run.ts",
+    "discover": "npx tsx src/discovery/cli/run.ts",
+    "fingerprint": "npx tsx src/discovery/state-lab/cli.ts",
+    "fingerprint:lab": "npx tsx src/discovery/state-lab/experiment.ts",
+    "reason": "npx tsx src/discovery/reasoning-lab/cli.ts",
+    "plan": "npx tsx src/discovery/qa-planning-lab/cli.ts",
+    "replayqa": "npx tsx src/discovery/run/cli.ts",
+    "reliability": "npx tsx src/discovery/run/reliability/benchmark.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
