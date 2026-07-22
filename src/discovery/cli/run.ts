@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { loadEnv } from './env.js';
+loadEnv();
+
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { findConfigSync } from '../../config/index.js';

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { loadEnv } from '../cli/env.js';
+loadEnv(); // Load .env before anything else
+
 import { parseArgs, resolveCredentialsLayered, normalizeUrl } from '../cli/args.js';
 import { findConfigSync } from '../../config/index.js';
 import { LoginFailedError, reportLoginFailure } from '../login/index.js';
