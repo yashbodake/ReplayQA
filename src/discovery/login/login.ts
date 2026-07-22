@@ -42,6 +42,16 @@ export async function performLogin(
     await controller.pressEnter(PASSWORD);
   }
   await controller.waitForStable(15000);
+
+  // The API call may still be in-flight after networkidle (the button shows
+  // "Signing in..."). Poll for the login form to actually disappear — the
+  // definitive signal that the SPA has re-rendered to the authenticated view.
+  // Polls every 500ms for up to 15s after networkidle.
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    const snap = await controller.currentSnapshot();
+    if (!snap.hasPassword) break; // login form gone → done
+  }
 }
 
 /**
