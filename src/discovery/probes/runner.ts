@@ -89,13 +89,12 @@ export async function runProbes(args: RunProbesArgs): Promise<{
         continue;
       }
     } else {
-      // Buttons and links: classify under the vocabulary safety policy.
+      // Buttons, links, and cards: classify under the vocabulary safety policy.
       const verdict = classifyAction(candidate.label);
-      // For LINKS: skip only if destructive. Non-destructive links (product
-      // details, content links) are safe to probe even without an action verb —
-      // they're already filtered for same-origin + non-nav in currentActions().
-      // For BUTTONS: require matching a PROBE_PATTERN (conservative).
-      const shouldProbe = candidate.type === 'link'
+      // For LINKS and CARDS: skip only if destructive. Non-destructive items
+      // (product details, contact cards, content links) are safe to probe even
+      // without an action verb. For BUTTONS: require matching a PROBE_PATTERN.
+      const shouldProbe = candidate.type === 'link' || candidate.type === 'card'
         ? verdict.classification !== 'destructive'
         : verdict.classification === 'probe';
       if (!shouldProbe) {

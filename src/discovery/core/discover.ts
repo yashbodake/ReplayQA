@@ -104,6 +104,31 @@ export async function runDiscovery(
       options.credentials?.username && options.credentials?.password
     );
 
+    // Explore the LANDING page before login — follows links like "Sign Up",
+    // probes buttons, and captures any pre-auth pages (e.g., register form).
+    await probeFrom(landingState, ctx.targetUrl);
+    if (!loginVisible || !haveCredentials) {
+      // Also do nav-follow on the landing if we're not going to log in
+      // (or there's no login wall). Post-login nav-follow happens below.
+    } else {
+      // Landing has a login form + we have creds → follow nav links on the
+      // landing FIRST (captures Sign Up page), then return for login.
+      const landingLinks = await ctx.controller.currentNavLinks();
+      for (const link of landingLinks) {
+        if (isLogoutLabel(link.text)) continue;
+        if (pages.length >= maxPages) break;
+        try {
+          await ctx.controller.goto(link.href, { timeout: 20000 });
+          await ctx.controller.waitForStable();
+        } catch { continue; }
+        const { state: navState } = await captureAndAdd();
+        await probeFrom(navState, link.href);
+      }
+      // Return to the landing page for login.
+      await ctx.controller.goto(ctx.targetUrl, { timeout: 30000 }).catch(() => undefined);
+      await ctx.controller.waitForStable();
+    }
+
     let loggedIn = false;
     let authedBaseUrl = ctx.targetUrl;
     if (loginVisible && haveCredentials && options.credentials) {

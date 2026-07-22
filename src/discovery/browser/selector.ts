@@ -19,7 +19,7 @@ export type Selector =
   | { label: string };
 
 /** The kind of interaction a candidate represents. */
-export type InteractionType = 'button' | 'link' | 'input' | 'tab' | 'expander';
+export type InteractionType = 'button' | 'link' | 'input' | 'tab' | 'expander' | 'card';
 
 /**
  * A visible interactive element on the page, with the label to display/audit

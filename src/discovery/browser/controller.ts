@@ -319,7 +319,10 @@ export class BrowserController {
       // 1. Buttons (<button>, [role="button"])
       document.querySelectorAll('button, [role="button"]').forEach((el) => {
         if (!isVisible(el)) return;
-        const label = (el.textContent || '').trim() || el.getAttribute('aria-label') || el.getAttribute('title') || '';
+        // Prefer aria-label (the semantic accessible name) over textContent.
+        // E.g., PhoneBook cards have role="button" aria-label="View details for X"
+        // but messy textContent. aria-label matches the probe vocabulary.
+        const label = el.getAttribute('aria-label') || (el.textContent || '').trim() || el.getAttribute('title') || '';
         const clean = label.split('\n')[0].trim().slice(0, 80);
         if (clean) push({ label: clean, type: 'button', role: 'button', name: clean });
       });
@@ -373,6 +376,30 @@ export class BrowserController {
         const label = (el.textContent || '').trim() || el.getAttribute('aria-label') || 'expander';
         const clean = label.split('\n')[0].trim().slice(0, 60);
         if (clean) push({ label: clean, type: 'expander', role: 'button', name: clean });
+      });
+
+      // 6. Cards (clickable divs/sections/li with cursor:pointer, onclick, or .clickable class)
+      //    PhoneBook uses .card-custom.clickable divs; many apps use cursor:pointer on divs.
+      document.querySelectorAll('div, section, article, li').forEach((el) => {
+        if (!isVisible(el)) return;
+        // Skip containers that have interactive children (buttons, links inside).
+        if (el.querySelector('button, a[href], input, select, textarea')) return;
+        if (el.closest('nav, [role="navigation"]')) return;
+        // Must have a class for reliable CSS targeting.
+        const cls = (el.className || '').toString().trim().split(/\s+/)[0];
+        if (!cls || cls.length < 2) return;
+        // Must look clickable.
+        const style = getComputedStyle(el);
+        const isClickable = style.cursor === 'pointer' || el.hasAttribute('onclick') || /click/i.test(el.className || '');
+        if (!isClickable) return;
+        // Label from text content (first line, truncated).
+        const label = (el.textContent || '').trim().split('\n')[0].trim().slice(0, 60);
+        if (!label) return;
+        // Skip oversized containers (entire page sections, not cards).
+        const rect = el.getBoundingClientRect();
+        if (rect.width > 800 || rect.height > 300) return;
+        const css = el.tagName.toLowerCase() + '.' + cls;
+        push({ label, type: 'card', css });
       });
 
       return out;
