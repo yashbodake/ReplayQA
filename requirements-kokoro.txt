@@ -1,0 +1,17 @@
+# Kokoro TTS runtime (installed into an isolated uv-managed venv).
+#
+# Provision once:
+#   uv venv --python 3.12 .venv-kokoro
+#   uv pip install --python .venv-kokoro/bin/python -r requirements-kokoro.txt
+#   # spacy model (kokoro's g2p needs it; not pulled in automatically as a wheel):
+#   uv pip install --python .venv-kokoro/bin/python \
+#     https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+#
+# Kokoro's model weights (~300MB) download automatically from HuggingFace on the
+# first KPipeline() call — no manual download step needed.
+#
+# Kokoro's full `kokoro` package needs spacy/thinc, which does not build on
+# Python 3.14. That is exactly why this file pins a 3.12 venv managed by uv —
+# the rest of ReplayQA stays on the system Python.
+kokoro>=0.9.4
+soundfile>=0.12.0

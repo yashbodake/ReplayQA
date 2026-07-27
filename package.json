@@ -14,6 +14,9 @@
     "reason": "npx tsx src/discovery/reasoning-lab/cli.ts",
     "plan": "npx tsx src/discovery/qa-planning-lab/cli.ts",
     "replayqa": "npx tsx src/discovery/run/cli.ts",
+    "narrate": "npx tsx src/narration/cli.ts",
+    "narrate:benchmark": "npx tsx src/narration/benchmark-cli.ts",
+    "demo": "npx tsx src/walkthrough/cli.ts",
     "reliability": "npx tsx src/discovery/run/reliability/benchmark.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit"

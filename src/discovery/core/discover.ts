@@ -50,6 +50,7 @@ export async function runDiscovery(
   const probedStates = new Set<string>();
   const graph = new TransitionGraphBuilder();
   const phase = options.onPhase;
+  const emit = options.onEvent;
 
   /**
    * Capture the current page; register it in the output (and run detectors)
@@ -64,6 +65,8 @@ export async function runDiscovery(
     exploredStates.add(state.id);
     pages.push(toDiscoveredPage(state, pages.length + 1));
     await ctx.detectorManager.runAll(state);
+    // Emit a discovery event with verified facts only (id, url, label).
+    emit?.('state-discovered', { stateId: state.id, url: state.url, label, pageIndex: pages.length });
     return { state, isNew: true };
   };
 
@@ -98,6 +101,7 @@ export async function runDiscovery(
     await ctx.controller.waitForStable();
 
     const { state: landingState } = await captureAndAdd();
+    emit?.('landing-captured', { url: landingState.url, label: landingState.snapshot.heading || landingState.url });
 
     const loginVisible = await hasLoginForm(ctx.controller);
     const haveCredentials = Boolean(
@@ -136,11 +140,13 @@ export async function runDiscovery(
       const verification = await loginAndVerify(ctx.controller, options.credentials);
       if (!verification.success) {
         phase?.('login-failed');
+        emit?.('login-failed', { reason: 'verification-failed' });
         // Preserve partial artifacts (the landing state) before stopping.
         persistPartial(ctx.outputDir, targetUrl, pages, graph.graph);
         throw new LoginFailedError(verification);
       }
       loggedIn = true;
+      emit?.('authenticated', { postLoginUrl: ctx.controller.currentUrl() });
       await ctx.controller.waitForStable();
       const { state: authedState } = await captureAndAdd();
       authedBaseUrl = ctx.controller.currentUrl();
@@ -185,6 +191,14 @@ export async function runDiscovery(
   writeFileSync(resolve(ctx.outputDir, 'journeys.json'), JSON.stringify(journeys, null, 2) + '\n', 'utf-8');
   const flowHtml = renderFlowReport(graph.graph, journeys, targetUrl);
   writeFileSync(resolve(ctx.outputDir, 'flow-report.html'), flowHtml, 'utf-8');
+
+  // Emit one flow-discovered event per transition with observed changes
+  // (verified facts only: action + change descriptions).
+  for (const edge of graph.graph.edges) {
+    if (edge.changes && edge.changes.length > 0) {
+      emit?.('flow-discovered', { action: edge.action, changes: edge.changes });
+    }
+  }
 
   return {
     application: { url: targetUrl },

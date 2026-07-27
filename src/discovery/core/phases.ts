@@ -1,12 +1,23 @@
 import type { DiscoveryCredentials } from '../../config/types.js';
 import type { Logger } from './logger.js';
+import type { EventType } from '../../narration/timeline/types.js';
 
 /** Coarse phases the engine emits for console/progress UI. */
 export type DiscoveryPhase = 'opening' | 'login-start' | 'login-failed' | 'discovering';
 
+/**
+ * A discovery event hook. The engine calls it at meaningful boundaries with
+ * the event type and verified-facts-only metadata. The narration subsystem
+ * adapts this into a `TimelineRecorder.record()` call; nothing in discovery
+ * depends on narration, keeping the dependency direction intact.
+ */
+export type DiscoveryEventFn = (type: EventType, metadata?: Record<string, unknown>) => void;
+
 export interface DiscoveryHooks {
   /** Called by the engine at phase boundaries (for console output). */
   onPhase?: (phase: DiscoveryPhase) => void;
+  /** Called by the engine when a narration-worthy event occurs. */
+  onEvent?: DiscoveryEventFn;
 }
 
 /**

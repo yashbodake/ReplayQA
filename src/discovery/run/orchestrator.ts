@@ -9,6 +9,7 @@ import { LoginFailedError } from '../login/index.js';
 import { pickTopScenario, renderSummary } from './summary.js';
 import { promptApproval } from './approval.js';
 import type { DiscoveryCredentials } from '../../config/types.js';
+import { TimelineRecorder, narrate } from '../../narration/index.js';
 
 export interface RunOptions {
   apiKey: string;
@@ -20,6 +21,10 @@ export interface RunOptions {
   outputDir?: string;
   /** Maximum LLM repair attempts in the reliability loop. */
   maxRepairAttempts?: number;
+  /** Produce the narrated summary video after the run (default: on). */
+  narrate?: boolean;
+  /** Inject a pre-built timeline recorder (e.g. from a parent process). */
+  recorder?: TimelineRecorder;
 }
 
 export interface RunResult {
@@ -50,13 +55,27 @@ export async function runReplayQA(
   mkdirSync(artifactsDir, { recursive: true });
   const stage = (name: string) => console.log(`\n✓ ${name}`);
 
+  // Timeline recorder (Refinement #1): real, streamed runtime events. One
+  // recorder owns the whole run; discovery emits via the onEvent hook and the
+  // orchestrator emits at stage boundaries.
+  const narrationEnabled = options.narrate !== false && process.env.NARRATION_ENABLED !== 'false';
+  const recorder =
+    options.recorder ??
+    new TimelineRecorder({
+      runId: `run-${Date.now()}`,
+      file: resolve(artifactsDir, 'narration', 'timeline.json'),
+    });
+  recorder.record('run-started', { url: targetUrl }, 'high');
+
   try {
     // 1 ── Discovery (BrowserController + StateManager + DetectorManager)
     stage('Discovering application');
+    recorder.record('discovery-started', { url: targetUrl }, 'high');
     const discovery = await runDiscovery(targetUrl, {
       headed: options.headed,
       credentials: options.credentials,
       outputDir: artifactsDir,
+      onEvent: (type, metadata) => recorder.record(type, metadata ?? {}, type === 'authenticated' || type === 'login-failed' ? 'high' : 'medium'),
     });
     // runDiscovery returns the result; the orchestrator persists discovery.json
     // (the discover CLI does this, but the MVP calls the engine directly).
@@ -68,6 +87,10 @@ export async function runReplayQA(
     const reasoningOutcome = await reason(observations, { apiKey: options.apiKey });
     writeJSON(artifactsDir, 'reasoning.json', reasoningOutcome.result);
     writeRaw(artifactsDir, 'reasoning.raw.txt', reasoningOutcome.raw);
+    recorder.record('reasoning-completed', {
+      applicationType: reasoningOutcome.result.applicationType,
+      confidence: reasoningOutcome.result.confidence,
+    }, 'high');
 
     // 3 ── QA Planning
     stage('Generating QA plan');
@@ -76,6 +99,10 @@ export async function runReplayQA(
     writeJSON(artifactsDir, 'test-plan.json', planOutcome.plan);
     writeRaw(artifactsDir, 'test-plan.md', renderMarkdown(planOutcome.plan));
     writeRaw(artifactsDir, 'test-plan.raw.txt', planOutcome.raw);
+    recorder.record('qa-plan-generated', {
+      scenarioCount: planOutcome.plan.functionalScenarios.length,
+      confidence: planOutcome.plan.confidence,
+    }, 'high');
 
     // 4 ── Review + approval gate
     const scenario = pickTopScenario(planOutcome.plan);
@@ -84,6 +111,7 @@ export async function runReplayQA(
     if (!scenario) {
       console.log('No testable scenario was identified — aborting before generation.');
       console.log('Artifacts preserved under artifacts/discovery/.');
+      recorder.record('run-finished', { reason: 'no-scenario' }, 'medium');
       return { ok: true, stage: 'plan' };
     }
 
@@ -92,11 +120,13 @@ export async function runReplayQA(
       : await promptApproval('Generate this test? [Y/n] ');
     if (!approved) {
       console.log('\nAborted. Artifacts preserved under artifacts/discovery/.');
+      recorder.record('run-finished', { reason: 'aborted' }, 'medium');
       return { ok: true, stage: 'plan' };
     }
 
     // 5 ── Generate ONE Playwright test for the top scenario (initial pass)
     stage('Generating Playwright test');
+    recorder.record('generation-started', { scenarioId: scenario.id, scenarioTitle: scenario.title }, 'high');
     const generated = await generateTest(
       targetUrl,
       observations,
@@ -121,13 +151,24 @@ export async function runReplayQA(
         maxRepairAttempts: options.maxRepairAttempts ?? 3,
         testFile,
         headed: options.headed,
-        onAttempt: (a) =>
+        onAttempt: (a) => {
+          recorder.record('repair-attempt', {
+            attempt: a.attemptNumber,
+            source: a.source,
+            passed: a.execution.passed,
+          }, a.execution.passed ? 'high' : 'medium');
           console.log(
             `  attempt ${a.attemptNumber} [${a.source}]: ${a.execution.passed ? '✓ passed' : '✗ ' + (a.execution.diagnostics?.errorType ?? 'failed')}` +
             (a.validation.findings.some((f) => f.autoFixed) ? ' (deterministic fix applied)' : '')
-          ),
+          );
+        },
       },
     });
+    recorder.record(
+      reliability.passed ? 'execution-passed' : 'execution-failed',
+      { attempts: reliability.attempts.length, repairsUsed: reliability.repairAttemptsUsed, firstPassSuccess: reliability.firstPassSuccess },
+      'high'
+    );
 
     // Record this run into the persisted reliability metrics.
     const runRecord = toRunRecord({ targetUrl, scenarioTitle: scenario.title, outcome: reliability });
@@ -151,6 +192,7 @@ export async function runReplayQA(
 
     // 7 ── Report
     stage('Creating report');
+    recorder.record('report-generated', { reliabilityReport: resolve(artifactsDir, 'reliability-report.html') }, 'medium');
     if (reliability.passed) {
       console.log(`\n✓ Test passed (${reliability.firstPassSuccess ? 'first try' : `${reliability.repairAttemptsUsed} repair(s)`})`);
     } else {
@@ -158,6 +200,27 @@ export async function runReplayQA(
         `\n✗ Test failed after ${reliability.attempts.length} attempt(s) — artifacts preserved for review.`
       );
     }
+
+    // 8 ── Narration (non-fatal: a failure here never invalidates earlier work).
+    let summaryPath: string | undefined;
+    if (narrationEnabled) {
+      stage('Generating narration');
+      const narration = await narrate({
+        apiKey: options.apiKey,
+        artifactsDir,
+        reportDir: resolve(process.cwd(), 'reports'),
+      });
+      if (narration.ok) {
+        summaryPath = narration.summaryPath;
+        console.log(`\n✓ Narrated summary: ${narration.summaryPath}` +
+          (narration.durationMs ? ` (${(narration.durationMs / 1000).toFixed(1)}s)` : ''));
+      } else {
+        console.log(`\n· Narration skipped: ${narration.error}`);
+      }
+    }
+
+    recorder.record('run-finished', { passed: reliability.passed, summaryProduced: Boolean(summaryPath) }, 'high');
+
     console.log(`\nDone. Reliability report: ${resolve(artifactsDir, 'reliability-report.html')}`);
     if (existsSync(resolve(process.cwd(), 'reports', 'index.html'))) {
       console.log(`      Execution dashboard: ${resolve(process.cwd(), 'reports', 'index.html')}`);
@@ -170,8 +233,12 @@ export async function runReplayQA(
     };
   } catch (error) {
     // Propagate LoginFailedError so the CLI can present it with evidence + suggestions.
-    if (error instanceof LoginFailedError) throw error;
+    if (error instanceof LoginFailedError) {
+      recorder.record('run-finished', { reason: 'login-failed' }, 'high');
+      throw error;
+    }
     const message = error instanceof Error ? error.message : String(error);
+    recorder.record('run-finished', { reason: 'error', error: message }, 'high');
     console.error(`\n✗ Pipeline failed: ${message}`);
     console.error('  All completed artifacts have been preserved.');
     return { ok: false, error: message };

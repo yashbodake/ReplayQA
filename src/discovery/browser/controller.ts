@@ -24,6 +24,18 @@ export interface BrowserControllerOptions {
   headed?: boolean;
   /** The target app's origin; used for same-origin link filtering. */
   origin: string;
+  /**
+   * Optional Playwright video recording config. When set, the context records a
+   * video (Playwright writes the webm when the context closes). Discovery does
+   * NOT set this — it is used by the walkthrough recorder. Backward compatible:
+   * omitted → no recording, exactly the pre-v0.9.1 behaviour.
+   */
+  recordVideo?: { dir: string; size?: { width: number; height: number } };
+  /**
+   * Optional viewport. Playwright records at the viewport size, so set this
+   * alongside `recordVideo.size` for a true-FHD recording.
+   */
+  viewport?: { width: number; height: number };
 }
 
 /**
@@ -42,10 +54,14 @@ export class BrowserController {
   private page?: Page;
   private readonly origin: string;
   private readonly headed: boolean;
+  private readonly recordVideo?: { dir: string; size?: { width: number; height: number } };
+  private readonly viewport?: { width: number; height: number };
 
   constructor(options: BrowserControllerOptions) {
     this.origin = options.origin;
     this.headed = options.headed ?? false;
+    this.recordVideo = options.recordVideo;
+    this.viewport = options.viewport;
   }
 
   async open(): Promise<void> {
@@ -53,9 +69,29 @@ export class BrowserController {
       headless: !this.headed,
       slowMo: this.headed ? 200 : 0,
     });
-    this.context = await this.browser.newContext();
+    // Build context options. Only add recordVideo/viewport when configured —
+    // Discovery passes neither, so its behaviour is byte-for-byte unchanged.
+    const contextOptions: Record<string, unknown> = {};
+    if (this.recordVideo) contextOptions.recordVideo = this.recordVideo;
+    if (this.viewport) contextOptions.viewport = this.viewport;
+    this.context = await this.browser.newContext(contextOptions);
     await this.context.addInitScript(INIT_SCRIPT);
     this.page = await this.context.newPage();
+  }
+
+  /**
+   * Path of the recorded video, if `recordVideo` was configured. Must be called
+   * BEFORE `close()` (Playwright finalises the file on context close, but the
+   * path is resolvable while the page is alive). Used by the walkthrough recorder.
+   */
+  async videoPath(): Promise<string | undefined> {
+    const video = this.page?.video();
+    if (!video) return undefined;
+    try {
+      return await video.path();
+    } catch {
+      return undefined;
+    }
   }
 
   async close(): Promise<void> {
@@ -352,10 +388,21 @@ export class BrowserController {
         const aria = el.getAttribute('aria-label') || '';
         const name = el.getAttribute('name') || '';
         const id = el.getAttribute('id') || '';
-        const label = ph || aria || name || id || 'text input';
+        // PREFER an explicit <label for="<id>"> text as the accessible name and
+        // selector. This is how the working test targets fields
+        // (getByRole('textbox', { name: 'Full Name *' })), and it binds reliably
+        // to framework v-model state — placeholder-based fills can race Vue's
+        // reactivity and leave the model empty (the "contact never saves" bug).
+        let labelFor = '';
+        if (id) {
+          const labelEl = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+          if (labelEl) labelFor = (labelEl.textContent || '').trim();
+        }
+        const label = labelFor || ph || aria || name || id || 'text input';
         const clean = label.slice(0, 60);
-        if (ph) push({ label: clean, type: 'input', placeholder: ph });
+        if (labelFor) push({ label: clean, type: 'input', labelText: labelFor });
         else if (aria) push({ label: clean, type: 'input', labelText: aria });
+        else if (ph) push({ label: clean, type: 'input', placeholder: ph });
         else if (id) push({ label: clean, type: 'input', css: `#${id}` });
         else if (name) push({ label: clean, type: 'input', css: `input[name="${name}"]` });
       });
@@ -430,6 +477,38 @@ export class BrowserController {
     await this.requirePage().reload({ waitUntil: 'domcontentloaded' });
   }
 
+  /**
+   * Read the current value of an input/textarea/select matching `selector`.
+   * Returns '' if the field is empty or not found. Used by the walkthrough
+   * recorder to verify a fill actually took on framework-controlled inputs.
+   *
+   * (v0.9.3 — additive; discovery does not call this. It unblocks the recorder's
+   * "did the field actually accept the value?" check without exposing arbitrary
+   * page.evaluate to the rest of the engine.)
+   */
+  async inputValue(selector: Selector): Promise<string> {
+    try {
+      const locator = this.resolve(selector);
+      return (await locator.inputValue().catch(() => '')) ?? '';
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Type text into an input character-by-character, firing real keyboard events
+   * that framework event listeners (React/Vue onChange, masked-input handlers)
+   * respond to — unlike `fill()`, which sets the value atomically and can be
+   * missed by libraries that listen for per-keystroke events.
+   *
+   * Clears the field first. (v0.9.3 — additive; discovery does not call this.)
+   */
+  async type(selector: Selector, value: string, options: { timeout?: number } = {}): Promise<void> {
+    const locator = this.resolve(selector);
+    await locator.fill('', this.clickOptions(options)).catch(() => undefined);
+    await locator.pressSequentially(value, { delay: 30, timeout: options.timeout ?? 5000 });
+  }
+
   private requirePage(): Page {
     if (!this.page) {
       throw new Error('BrowserController is not open. Call open() first.');
@@ -449,7 +528,11 @@ export class BrowserController {
       return page.getByPlaceholder(selector.placeholder).first();
     }
     if ('label' in selector) {
-      return page.getByLabel(selector.label).first();
+      // EXACT match: a substring match would make "Address" also match
+      // "Email Address" (and vice versa), filling the wrong field — the
+      // "email got the address value" bug. PhoneBook's own working test uses
+      // { name: 'Address', exact: true } for this reason.
+      return page.getByLabel(selector.label, { exact: true }).first();
     }
     return page.locator('body').first();
   }

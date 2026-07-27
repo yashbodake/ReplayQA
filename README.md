@@ -39,6 +39,17 @@ ReplayQA is **not** a test recorder. It is an **autonomous discovery engine** th
 - Node.js 18+
 - npm
 - An OpenAI-compatible LLM API key (Olama, Cerebras, OpenAI, etc.)
+- **For narration** (optional):
+  - `ffmpeg` + `ffprobe`
+  - **Kokoro** (default, recommended): `uv` ([install](https://docs.astral.sh/uv/)) + provision the venv:
+    ```bash
+    uv venv --python 3.12 .venv-kokoro
+    uv pip install --python .venv-kokoro/bin/python -r requirements-kokoro.txt
+    uv pip install --python .venv-kokoro/bin/python \
+      https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+    ```
+    (Kokoro's model weights download automatically on first use.)
+  - **Edge-TTS** (fallback): `pip install edge-tts`
 
 ### Install
 
@@ -87,6 +98,22 @@ npm run replayqa -- https://www.saucedemo.com \
 npm run replayqa -- https://example.com --yes --headed
 ```
 
+### Cinematic Demo (v0.9.1)
+
+Produce a polished, narrated product-demo video — not just a test recording. ReplayQA logs in, walks through the app's key features on camera (create, search, edit, delete), and renders a narrated summary with synchronized voice-over:
+
+```bash
+# Demo with login (credentialed app):
+npm run demo -- http://localhost:8080/ --username yash --password 'Yash@9100'
+
+# Demo without login:
+npm run demo -- https://todomvc.com/examples/vue/dist/
+```
+
+The demo pipeline: **discover → reason → plan → generate → execute → walkthrough (login + interactive feature demo on camera) → narrate (Kokoro TTS + cinematic render) → embed in HTML report.**
+
+The walkthrough recorder runs a clean 5-step linear script (login → create → search → edit → delete), each step once, with natural pacing. The narration describes only what actually happened on screen (verified observations — no hallucinated outcomes).
+
 ---
 
 ## Commands
@@ -101,6 +128,9 @@ npm run replayqa -- https://example.com --yes --headed
 | `npm run fingerprint -- <url>` | **State fingerprint** — inspect the 5 fingerprint strategies |
 | `npm run fingerprint:lab` | **Fingerprint experiments** — validation suite |
 | `npm run reliability` | **Reliability benchmark** — measure generation quality |
+| `npm run narrate` | **Narration** — produce `ReplayQA-Summary.mp4` from a completed run |
+| `npm run narrate:benchmark` | **Render benchmark** — compare v0.8 legacy vs v0.9 cinematic encoding |
+| `npm run demo` | **Cinematic demo** — login + interactive walkthrough + narrated summary video |
 | `npm run replay` | **Interactive test selector** (original Playwright runner) |
 | `npm test` | **Run existing Playwright tests** |
 | `npm run build` | **Compile TypeScript** |
@@ -238,6 +268,24 @@ src/discovery/
 └── index.ts              public barrel
 ```
 
+```
+src/narration/                Narration Engine (v0.8–v0.9.1)
+├── timeline/               real timestamped runtime events (TimelineRecorder)
+├── planner/                chapters with verified facts only (no NLG)
+├── script/                 process-narrator (LLM + deterministic fallback)
+├── app-script/             app-narrator for demo mode (narrates the application)
+├── tts/                    TTSProvider interface + KokoroTTSProvider + EdgeTTSProvider
+├── render/                 RenderPolicy strategies (default, synced, walkthrough)
+├── audit/                  accuracy checker + observation-grounding check
+├── narrate.ts              orchestrates: context → chapters → script → TTS → render → HTML
+└── cli.ts                  `npm run narrate`
+
+src/walkthrough/              Interactive Walkthrough Recorder (v0.9.1)
+├── walkthrough.ts          5-step linear demo (login → create → search → edit → delete)
+└── cli.ts                  `npm run demo`
+```
+```
+
 ### Key Design Principles
 
 1. **BrowserController is the only Playwright module.** Everything else is browser-agnostic and unit-testable.
@@ -258,6 +306,23 @@ CEREBRAS_API_KEY=your-api-key
 REASONING_BASE_URL=https://ollama.com/v1      # or https://api.cerebras.ai/v1
 REASONING_MODEL=gpt-oss:120b                   # or gpt-oss-120b, glm-5.2, etc.
 ```
+
+### Narration, rendering & demo (v0.9–v0.9.1)
+
+| Env | Default | Purpose |
+|---|---|---|
+| `REPLAYQA_MODE` | `demo` | `demo` = cinematic pacing (slowMo 150ms); `test` = fast (no slowMo). |
+| `REPLAYQA_SLOWMO` | `150` | Per-action delay in `demo` mode (ms). |
+| `NARRATION_TTS_PROVIDER` | `kokoro` | `kokoro` (recommended, local, high-quality) or `edge` (online fallback). |
+| `KOKORO_VOICE` | `af_sarah` | Any Kokoro voice (`af_bella`, `am_michael`, `af_nova`, …). |
+| `KOKORO_SPEED` | `1.0` | Speaking speed multiplier. |
+| `NARRATION_FPS` | `30` | Output frame rate (set `60` for high-framerate demos). |
+| `NARRATION_RESOLUTION` | `1920x1080` | Output resolution. |
+| `NARRATION_CRF` | `18` | H.264 quality (lower = better; 18 ≈ visually lossless). |
+| `NARRATION_PRESET` | `slow` | x264 preset (slower = better compression). |
+| `NARRATION_AUDIO_BITRATE` | `192k` | AAC audio bitrate. |
+| `NARRATION_RENDER_POLICY` | `default` | `default`, `synced`, or `walkthrough` (no-loop for real footage). |
+| `NARRATION_ENABLED` | `true` | Set `false` to skip narration in the full pipeline. |
 
 ### `replayqa.config.json`
 
@@ -307,7 +372,24 @@ artifacts/test-output/          Playwright execution artifacts
 
 artifacts/logs/                 console + network collector output
 
-reports/index.html              self-contained HTML dashboard
+artifacts/narration/            Narration Engine (v0.8–v0.9.1)
+├── timeline.json               real timestamped runtime events
+├── narration.json              narration chapters (facts only, no prose)
+├── script.md                   the narration script (the only NLG output)
+├── narration.mp3               synthesized voice-over (Kokoro or Edge-TTS)
+├── narration-meta.json         durations, provider, voice, policy, resolution, fps
+├── accuracy.json               claim-grounding check results
+└── grounding.json              observation-grounding check (demo mode)
+
+artifacts/walkthrough/          Interactive Walkthrough (v0.9.1)
+├── video.webm                  the real on-camera walkthrough (login + features)
+├── walkthrough-events.json     per-step verified outcomes
+└── chapters.json               demo chapters with observations
+
+reports/
+├── index.html                  self-contained HTML dashboard (embeds the summary)
+└── ReplayQA-Summary.mp4        narrated summary video
+
 tests/replayqa-generated.spec.ts   the generated Playwright test
 ```
 
@@ -333,6 +415,9 @@ tests/replayqa-generated.spec.ts   the generated Playwright test
 | v0.6 | Real-world benchmark | 6 apps tested (TodoMVC, SauceDemo, The Internet, OrangeHRM) |
 | v0.7 | Interaction discovery | Buttons + links + inputs + tabs + expanders + cards |
 | Interactive CLI | Unified menu | One command, menu-driven, session state |
+| v0.8 | Narrated summary | `ReplayQA-Summary.mp4` — AI narration from structured artifacts (no video analysis) |
+| v0.9 | Cinematic rendering | Kokoro TTS, 1920×1080@30fps H.264, configurable render policy, mode-driven recording |
+| v0.9.1 | Cinematic demo | `npm run demo` — interactive walkthrough recorder (login + create/search/edit/delete) + app-narrator + outcome verification |
 
 ---
 
@@ -385,6 +470,8 @@ All architecture and evaluation documents live in `docs/discovery/`:
 | [`flow-discovery-report.md`](docs/discovery/flow-discovery-report.md) | Flow graph + journey builder |
 | [`benchmark-report.md`](docs/discovery/benchmark-report.md) | 6-app real-world benchmark |
 | [`interaction-discovery-report.md`](docs/discovery/interaction-discovery-report.md) | Multi-type interaction probes |
+| [`narration-report.md`](docs/discovery/narration-report.md) | v0.8 Narration Engine — narrated summary video |
+| [`v0.9-cinematic-benchmark.md`](docs/discovery/v0.9-cinematic-benchmark.md) | v0.9 Cinematic rendering — Kokoro TTS, FHD H.264, benchmark |
 
 ---
 
