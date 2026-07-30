@@ -2,23 +2,28 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { BrowserController } from '../discovery/browser/controller.js';
 import { hasLoginForm, loginAndVerify } from '../discovery/login/index.js';
+import {
+  findNextAction,
+  isSearchInput,
+  pickSearchValue,
+  sampleValueFor,
+} from './action-selection.js';
 import type { DiscoveryCredentials } from '../config/types.js';
 import type { ActionCandidate } from '../discovery/browser/selector.js';
+import type { RawSnapshot } from '../discovery/models/snapshot.js';
 
 /**
- * The walkthrough recorder — a clean, linear product demo.
+ * The walkthrough recorder — an app-agnostic interactive product demo.
  *
- * Instead of scraping arbitrary DOM elements, this runs a fixed 5-step script
- * that tells a story on a single contact:
- *   1. LOGIN     — log in with credentials
- *   2. CREATE    — add a new contact (unique name + phone)
- *   3. SEARCH    — search for that same contact by name
- *   4. EDIT      — open the contact, change its name, save
- *   5. DELETE    — open the contact, delete it, confirm
+ * Instead of hardcoded steps for a specific app, this recorder:
+ *   1. Logs in (if credentials provided)
+ *   2. Discovers what's actually on the page (buttons, links, inputs)
+ *   3. Interacts with the real features it finds — clicking safe actions,
+ *      filling forms, navigating — whatever the app actually has.
  *
- * Each step runs exactly once, with natural pacing (pre-pause + result-hold)
- * so the video looks like a polished product demo. The contact created in
- * step 2 is the one searched, edited, and deleted — a coherent narrative.
+ * This works on SauceDemo (Add to cart, cart, checkout) just as well as
+ * PhoneBook (Add contact, search, edit) or TodoMVC (add todo, filter, toggle).
+ * The recorder adapts to whatever it finds.
  */
 
 export interface WalkthroughOptions {
@@ -27,6 +32,8 @@ export interface WalkthroughOptions {
   outputDir: string;
   artifactsDir: string;
   headed?: boolean;
+  /** Max number of demo steps to perform. Default 8. */
+  maxSteps?: number;
 }
 
 export interface WalkthroughChapter {
@@ -49,45 +56,27 @@ export interface WalkthroughResult {
   performedSteps: number;
 }
 
-interface StepEvent {
-  step: string;
-  action: string;
-  result: 'performed' | 'not-found' | 'error';
-  observations: string[];
-  timestampMs: number;
-}
-
 const PRE_PAUSE = 1500;
 const RESULT_HOLD = 2000;
+const STEP_DELAY = 800;
 
 export async function recordWalkthrough(options: WalkthroughOptions): Promise<WalkthroughResult> {
   const outDir = resolve(options.outputDir);
   mkdirSync(outDir, { recursive: true });
   const eventsPath = resolve(outDir, 'walkthrough-events.json');
   const chaptersPath = resolve(outDir, 'chapters.json');
+  const maxSteps = options.maxSteps ?? 12;
 
   const result: WalkthroughResult = {
-    ok: false,
-    eventsPath,
-    chaptersPath,
-    chapters: [],
-    authenticated: false,
-    totalSteps: 0,
-    performedSteps: 0,
+    ok: false, eventsPath, chaptersPath, chapters: [],
+    authenticated: false, totalSteps: 0, performedSteps: 0,
   };
 
-  const events: StepEvent[] = [];
+  const events: { step: string; action: string; result: string; observations: string[]; timestampMs: number }[] = [];
   const chapters: WalkthroughChapter[] = [];
   const t0 = Date.now();
   const elapsed = () => Date.now() - t0;
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-  const addChapter = (title: string, actions: string[], verified: WalkthroughChapter['verified']) => {
-    chapters.push({ index: chapters.length, title, start: Math.round(elapsed() / 1000), actions, verified });
-  };
-  const addEvent = (step: string, action: string, result: StepEvent['result'], observations: string[]) => {
-    events.push({ step, action, result, observations, timestampMs: elapsed() });
-  };
 
   const controller = new BrowserController({
     origin: deriveOrigin(options.targetUrl),
@@ -111,54 +100,143 @@ export async function recordWalkthrough(options: WalkthroughOptions): Promise<Wa
     }
     result.authenticated = authenticated;
     await sleep(RESULT_HOLD);
-    addChapter('Login', ['Sign in'], [{
-      action: 'Sign in',
-      observations: authenticated ? ['the user is signed in'] : ['login was attempted'],
-      fillSucceeded: authenticated,
-    }]);
-    addEvent('login', 'Sign in', authenticated ? 'performed' : 'error', authenticated ? ['signed in'] : ['login failed']);
+    chapters.push({
+      index: 0, title: 'Login', start: 0,
+      actions: ['Sign in'],
+      verified: [{ action: 'Sign in', observations: authenticated ? ['the user is signed in'] : ['login was attempted'], fillSucceeded: authenticated }],
+    });
+    events.push({ step: 'login', action: 'Sign in', result: authenticated ? 'performed' : 'error', observations: authenticated ? ['signed in'] : ['login failed'], timestampMs: elapsed() });
 
     const homeUrl = controller.currentUrl() || options.targetUrl;
-    const contactName = 'Demo ' + Date.now().toString().slice(-6);
-    const contactPhone = '555' + Date.now().toString().slice(-7);
-    const editedName = 'Edited ' + Date.now().toString().slice(-6);
+    let stepCount = 1; // login was step 1
 
-    // ── STEP 2: CREATE CONTACT ─────────────────────────────────────────────
-    await sleep(PRE_PAUSE);
-    const createObs = await stepCreate(controller, contactName, contactPhone, homeUrl, sleep);
-    await sleep(RESULT_HOLD);
-    addChapter('Create Contact', ['Add new contact', 'Fill form', 'Submit'], createObs.verified);
-    addEvent('create', 'Create contact', createObs.ok ? 'performed' : 'error', createObs.observations);
+    // ── STEPS 2+: DISCOVER & INTERACT WITH REAL FEATURES ───────────────────
+    // Each "round" = navigate to home, find safe actions, do one, record it.
+    const triedActions = new Set<string>();
+    let chapterActions: string[] = [];
+    let chapterVerified: WalkthroughChapter['verified'] = [];
+    let chapterStartMs = elapsed();
+    // Repetition guard: track the last observation signature + how many times
+    // it repeated. After 2 identical outcomes in a row, stop exploring that
+    // action category (prevents clicking 5 products that all do the same thing).
+    let lastObsSignature = '';
+    let repeatCount = 0;
 
-    // ── STEP 3: SEARCH ─────────────────────────────────────────────────────
-    await sleep(PRE_PAUSE);
-    // Reset to home first so search starts from the full list.
-    await safeGoto(controller, homeUrl);
-    const searchObs = await stepSearch(controller, contactName, sleep);
-    await sleep(RESULT_HOLD);
-    addChapter('Search', ['Search for the contact'], searchObs.verified);
-    addEvent('search', 'Search', searchObs.ok ? 'performed' : 'error', searchObs.observations);
+    while (stepCount < maxSteps) {
+      // Return to home for a clean start.
+      await safeGoto(controller, homeUrl);
+      await sleep(STEP_DELAY);
 
-    // ── STEP 4: EDIT ───────────────────────────────────────────────────────
-    await sleep(PRE_PAUSE);
-    // Clear search / go home so the contact is visible in the full list.
-    await safeGoto(controller, homeUrl);
-    await sleep(500);
-    const editObs = await stepEdit(controller, contactName, editedName, sleep);
-    await sleep(RESULT_HOLD);
-    addChapter('Edit Contact', ['Open contact', 'Edit', 'Change name', 'Save'], editObs.verified);
-    addEvent('edit', 'Edit contact', editObs.ok ? 'performed' : 'error', editObs.observations);
+      // Discover what's on the page RIGHT NOW.
+      const beforeSnap = await controller.currentSnapshot().catch(() => undefined);
+      const beforeUrl = controller.currentUrl();
+      const actions = await controller.currentActions();
 
-    // ── STEP 5: DELETE ─────────────────────────────────────────────────────
-    await sleep(PRE_PAUSE);
-    await safeGoto(controller, homeUrl);
-    await sleep(500);
-    const deleteObs = await stepDelete(controller, editedName, sleep);
-    await sleep(RESULT_HOLD);
-    addChapter('Delete Contact', ['Open contact', 'Delete', 'Confirm'], deleteObs.verified);
-    addEvent('delete', 'Delete contact', deleteObs.ok ? 'performed' : 'error', deleteObs.observations);
+      // Find the next safe, untried action to perform (with repetition guard).
+      const candidate = findNextAction(actions, triedActions, lastObsSignature, repeatCount);
+      if (!candidate) break; // nothing left to do
 
-    // Persist artifacts.
+      triedActions.add(candidate.label.toLowerCase());
+      await sleep(PRE_PAUSE);
+
+      // Perform the action.
+      const actionLabel = candidate.label;
+      let performed = false;
+      let fillSucceeded = false;
+      const observations: string[] = [];
+
+      if (candidate.type === 'input' && isSearchInput(candidate.label)) {
+        // It's a search/filter input — type something and press Enter.
+        const value = pickSearchValue(beforeSnap, actions);
+        try {
+          await controller.fill(candidate.selector, value, { timeout: 3000 });
+          await sleep(STEP_DELAY);
+          await controller.pressEnter(candidate.selector);
+          await controller.waitForStable(3000);
+          performed = true;
+          fillSucceeded = true;
+          observations.push(`entered "${value}" into the search field`);
+        } catch { /* ignore */ }
+      } else {
+        // It's a clickable action (button/link/card) — click it.
+        const preClickInputs = new Set(actions.filter(a => a.type === 'input').map(a => a.label));
+        try {
+          const clicked = await controller.click(candidate.selector, { timeout: 4000 });
+          if (clicked) {
+            performed = true;
+            await controller.waitForStable(3000);
+            await sleep(STEP_DELAY);
+
+            // If a form opened (new inputs appeared), fill + submit it.
+            const newInputs = (await controller.currentActions()).filter(
+              a => a.type === 'input' && !preClickInputs.has(a.label)
+            );
+            if (newInputs.length > 0) {
+              const fillResult = await fillAndSubmitForm(controller, newInputs, actionLabel, sleep);
+              fillSucceeded = fillResult;
+              if (fillResult) observations.push('filled the form and submitted it');
+            }
+          }
+        } catch { /* ignore */ }
+      }
+
+      // Capture the after-state and compute observations.
+      await sleep(RESULT_HOLD);
+      const afterSnap = await controller.currentSnapshot().catch(() => undefined);
+      const afterUrl = controller.currentUrl();
+
+      if (performed && beforeSnap && afterSnap) {
+        const diffs = computeObservations(beforeSnap, afterSnap);
+        if (afterUrl !== beforeUrl) diffs.push('the page navigated');
+        observations.push(...diffs);
+      }
+      if (observations.length === 0 && performed) {
+        observations.push('the action was performed');
+      }
+
+      // Record the step.
+      chapterActions.push(actionLabel);
+      chapterVerified.push({ action: actionLabel, observations, fillSucceeded });
+      events.push({ step: `step-${stepCount}`, action: actionLabel, result: performed ? 'performed' : 'not-found', observations, timestampMs: elapsed() });
+      stepCount++;
+
+      // Update repetition tracking: compare this step's observation signature
+      // to the previous one. If identical, increment the counter; if different,
+      // reset it. The guard uses this to break out of repetitive browsing.
+      const obsSignature = observations.join(';');
+      if (obsSignature === lastObsSignature) {
+        repeatCount++;
+      } else {
+        lastObsSignature = obsSignature;
+        repeatCount = 1;
+      }
+
+      // Flush a chapter every 2-3 actions for natural narration pacing.
+      if (chapterActions.length >= 2) {
+        chapters.push({
+          index: chapters.length,
+          title: chapterActions[0],
+          start: Math.round(chapterStartMs / 1000),
+          actions: chapterActions,
+          verified: chapterVerified,
+        });
+        chapterActions = [];
+        chapterVerified = [];
+        chapterStartMs = elapsed();
+      }
+    }
+
+    // Flush remaining.
+    if (chapterActions.length > 0) {
+      chapters.push({
+        index: chapters.length,
+        title: chapterActions[0],
+        start: Math.round(chapterStartMs / 1000),
+        actions: chapterActions,
+        verified: chapterVerified,
+      });
+    }
+
     writeFileSync(eventsPath, JSON.stringify(events, null, 2) + '\n', 'utf-8');
     writeFileSync(chaptersPath, JSON.stringify(chapters, null, 2) + '\n', 'utf-8');
 
@@ -169,7 +247,7 @@ export async function recordWalkthrough(options: WalkthroughOptions): Promise<Wa
     result.videoPath = videoPath;
     result.chapters = chapters;
     result.totalSteps = events.length;
-    result.performedSteps = events.filter((e) => e.result === 'performed').length;
+    result.performedSteps = events.filter(e => e.result === 'performed').length;
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -183,230 +261,71 @@ export async function recordWalkthrough(options: WalkthroughOptions): Promise<Wa
   }
 }
 
-// ── Step implementations ────────────────────────────────────────────────────
+// ── Action discovery ────────────────────────────────────────────────────────
 
-interface StepResult {
-  ok: boolean;
-  observations: string[];
-  verified: WalkthroughChapter['verified'];
-}
-
-/** Find a button/link by label substring in currentActions. */
-async function findAction(controller: BrowserController, labelRe: RegExp): Promise<ActionCandidate | undefined> {
-  const actions = await controller.currentActions();
-  return actions.find((a) => a.type !== 'input' && labelRe.test(a.label));
-}
-
-/** Find an input by label substring. */
-async function findInput(controller: BrowserController, labelRe: RegExp): Promise<ActionCandidate | undefined> {
-  const actions = await controller.currentActions();
-  return actions.find((a) => a.type === 'input' && labelRe.test(a.label));
-}
-
-/** Count contact-like rows on the page. */
-async function countContacts(controller: BrowserController): Promise<number> {
-  const actions = await controller.currentActions();
-  return actions.filter((a) => /\d{4,}/.test(a.label)).length;
-}
-
-// ── Step 2: Create ──────────────────────────────────────────────────────────
-async function stepCreate(
+/**
+ * Fill a form's inputs with realistic values and submit it.
+ * Returns true if at least one field was filled.
+ */
+async function fillAndSubmitForm(
   controller: BrowserController,
-  name: string,
-  phone: string,
-  homeUrl: string,
+  inputs: ActionCandidate[],
+  triggerAction: string,
   sleep: (ms: number) => Promise<void>
-): Promise<StepResult> {
-  const before = await countContacts(controller);
-  const verified: WalkthroughChapter['verified'] = [];
-
-  // Click "Add new contact"
-  const addBtn = await findAction(controller, /add new contact/i);
-  if (!addBtn) return { ok: false, observations: ['Add button not found'], verified };
-  await controller.click(addBtn.selector, { timeout: 4000 });
-  await controller.waitForStable(3000);
-  await sleep(800);
-  verified.push({ action: 'Open Add Contact form', observations: ['the Add Contact form opened'], fillSucceeded: true });
-
-  // Fill name + phone (label-based, exact match)
-  try {
-    await controller.fill({ label: 'Full Name *' }, name, { timeout: 3000 });
-    await controller.fill({ label: 'Phone Number *' }, phone, { timeout: 3000 });
-  } catch (e) {
-    return { ok: false, observations: ['could not fill the form fields'], verified };
+): Promise<boolean> {
+  let anyFilled = false;
+  for (const input of inputs.slice(0, 4)) {
+    const value = sampleValueFor(input.label, triggerAction);
+    if (!value) continue;
+    try {
+      await controller.fill(input.selector, value, { timeout: 2500 });
+      anyFilled = true;
+      await sleep(300);
+    } catch { /* skip */ }
   }
-  verified.push({ action: 'Fill name and phone', observations: [`entered name "${name}" and phone "${phone}"`], fillSucceeded: true });
-  await sleep(500);
+  if (!anyFilled) return false;
 
-  // Submit
-  const submit = await findAction(controller, /^Add Contact$/i);
+  // Find and click the submit button.
+  const actions = await controller.currentActions().catch(() => []);
+  const submit = actions.find(a =>
+    a.type === 'button' &&
+    !a.label.toLowerCase().includes(triggerAction.toLowerCase()) &&
+    /^(save|create|submit|add|checkout|continue|login|sign)/i.test(a.label.trim()) &&
+    !/^(cancel|close|back)$/i.test(a.label.trim())
+  );
   if (submit) {
-    await controller.click(submit.selector, { timeout: 4000 });
-    await controller.waitForStable(4000);
+    try {
+      await controller.click(submit.selector, { timeout: 3000 });
+      await controller.waitForStable(3000);
+    } catch { /* ignore */ }
   }
-  await sleep(500);
-
-  // Verify: navigate home to see the list (the form view hides it)
-  await safeGoto(controller, homeUrl);
-  await controller.waitForStable(3000);
-  const after = await countContacts(controller);
-  const saved = after > before;
-  verified.push({
-    action: 'Submit',
-    observations: saved ? ['a new contact was added to the list'] : ['the form was submitted'],
-    fillSucceeded: saved,
-  });
-
-  return {
-    ok: saved,
-    observations: saved ? [`created contact "${name}"`] : ['contact creation attempted'],
-    verified,
-  };
+  return anyFilled;
 }
 
-// ── Step 3: Search ──────────────────────────────────────────────────────────
-async function stepSearch(
-  controller: BrowserController,
-  contactName: string,
-  sleep: (ms: number) => Promise<void>
-): Promise<StepResult> {
-  const verified: WalkthroughChapter['verified'] = [];
-  const searchInput = await findInput(controller, /search/i);
-  if (!searchInput) return { ok: false, observations: ['search field not found'], verified };
+/** Compute human-readable observations from a before/after snapshot diff. */
+function computeObservations(before: RawSnapshot, after: RawSnapshot): string[] {
+  const obs: string[] = [];
+  if (after.forms.length > before.forms.length) obs.push('a form opened');
+  else if (after.forms.length < before.forms.length) obs.push('the form closed');
 
-  const before = await countContacts(controller);
-  await controller.fill(searchInput.selector, contactName, { timeout: 3000 });
-  await sleep(800);
-  try { await controller.pressEnter(searchInput.selector); } catch { /* ignore */ }
-  await controller.waitForStable(3000);
-  await sleep(500);
+  const beforeBtns = new Set(before.buttons);
+  const newBtns = after.buttons.filter(b => !beforeBtns.has(b)).slice(0, 3);
+  for (const b of newBtns) obs.push(`a "${b}" button appeared`);
 
-  const after = await countContacts(controller);
-  const filtered = after < before;
-  verified.push({
-    action: `Search for "${contactName}"`,
-    observations: filtered
-      ? ['the list filtered to show matching contacts']
-      : ['the search was performed'],
-    fillSucceeded: true,
-  });
-
-  return {
-    ok: true,
-    observations: filtered ? [`searched for "${contactName}", the list filtered`] : ['search performed'],
-    verified,
-  };
-}
-
-// ── Step 4: Edit ────────────────────────────────────────────────────────────
-async function stepEdit(
-  controller: BrowserController,
-  contactName: string,
-  newName: string,
-  sleep: (ms: number) => Promise<void>
-): Promise<StepResult> {
-  const verified: WalkthroughChapter['verified'] = [];
-
-  // Find and click the contact (by name match in its button/card label)
-  const contact = await findContactByName(controller, contactName);
-  if (!contact) return { ok: false, observations: [`contact "${contactName}" not found`], verified };
-  await controller.click(contact.selector, { timeout: 4000 });
-  await controller.waitForStable(3000);
-  await sleep(800);
-  verified.push({ action: 'Open contact details', observations: ['the contact details opened'], fillSucceeded: true });
-
-  // Click Edit
-  const editBtn = await findAction(controller, /^Edit/i);
-  if (!editBtn) return { ok: false, observations: ['Edit button not found'], verified };
-  await controller.click(editBtn.selector, { timeout: 4000 });
-  await controller.waitForStable(3000);
-  await sleep(500);
-
-  // Change the name field
-  try {
-    await controller.fill({ label: 'Full Name *' }, newName, { timeout: 3000 });
-  } catch {
-    // Try a generic name input
-    const nameInput = await findInput(controller, /name/i);
-    if (nameInput) await controller.fill(nameInput.selector, newName, { timeout: 3000 });
+  if (after.heading && after.heading !== before.heading) {
+    obs.push(`the heading changed to "${after.heading}"`);
   }
-  verified.push({ action: 'Change name', observations: [`changed the name to "${newName}"`], fillSucceeded: true });
-  await sleep(500);
 
-  // Save
-  const saveBtn = await findAction(controller, /^Save|^Update/i);
-  if (saveBtn) {
-    await controller.click(saveBtn.selector, { timeout: 4000 });
-    await controller.waitForStable(4000);
-  }
-  await sleep(500);
-  verified.push({ action: 'Save', observations: ['the contact was updated'], fillSucceeded: true });
+  // List/item count change.
+  const beforeItems = before.buttons.filter(b => /\d{3,}|@/.test(b)).length;
+  const afterItems = after.buttons.filter(b => /\d{3,}|@/.test(b)).length;
+  if (afterItems > beforeItems) obs.push(`items were added to the list`);
+  else if (afterItems < beforeItems && afterItems > 0) obs.push(`the list changed`);
 
-  return {
-    ok: true,
-    observations: [`edited contact "${contactName}" → "${newName}"`],
-    verified,
-  };
-}
-
-// ── Step 5: Delete ──────────────────────────────────────────────────────────
-async function stepDelete(
-  controller: BrowserController,
-  contactName: string,
-  sleep: (ms: number) => Promise<void>
-): Promise<StepResult> {
-  const verified: WalkthroughChapter['verified'] = [];
-
-  // Find and open the contact
-  const contact = await findContactByName(controller, contactName);
-  if (!contact) return { ok: false, observations: [`contact "${contactName}" not found`], verified };
-  await controller.click(contact.selector, { timeout: 4000 });
-  await controller.waitForStable(3000);
-  await sleep(800);
-  verified.push({ action: 'Open contact', observations: ['the contact details opened'], fillSucceeded: true });
-
-  // Click Delete
-  const delBtn = await findAction(controller, /^Delete/i);
-  if (!delBtn) return { ok: false, observations: ['Delete button not found'], verified };
-  await controller.click(delBtn.selector, { timeout: 4000 });
-  await controller.waitForStable(3000);
-  await sleep(500);
-
-  // Confirm if a dialog appeared (try clicking a confirm/yes button)
-  const confirmBtn = await findAction(controller, /^Yes$|^Confirm$|^Delete$|^OK$/i);
-  if (confirmBtn) {
-    await controller.click(confirmBtn.selector, { timeout: 3000 });
-    await controller.waitForStable(3000);
-  }
-  await sleep(500);
-
-  // Verify: go home and check the contact is gone
-  const snap = await controller.currentSnapshot();
-  const stillThere = snap.buttons.some((b) => b.toLowerCase().includes(contactName.toLowerCase().slice(0, 8)));
-  const deleted = !stillThere;
-  verified.push({
-    action: 'Delete',
-    observations: deleted ? ['the contact was removed from the list'] : ['delete was attempted'],
-    fillSucceeded: deleted,
-  });
-
-  return {
-    ok: deleted,
-    observations: deleted ? [`deleted contact "${contactName}"`] : ['delete attempted'],
-    verified,
-  };
+  return obs;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-/** Find a contact in the action list by name match. */
-async function findContactByName(controller: BrowserController, name: string): Promise<ActionCandidate | undefined> {
-  const actions = await controller.currentActions();
-  const lower = name.toLowerCase();
-  return actions.find((a) =>
-    (a.type === 'button' || a.type === 'card') && a.label.toLowerCase().includes(lower.slice(0, 8))
-  );
-}
 
 async function safeGoto(controller: BrowserController, url: string): Promise<void> {
   try {
