@@ -4,6 +4,7 @@ import { BrowserController } from '../discovery/browser/controller.js';
 import { hasLoginForm, loginAndVerify } from '../discovery/login/index.js';
 import {
   findNextAction,
+  isFlowAction,
   isSearchInput,
   pickSearchValue,
   sampleValueFor,
@@ -121,11 +122,17 @@ export async function recordWalkthrough(options: WalkthroughOptions): Promise<Wa
     // action category (prevents clicking 5 products that all do the same thing).
     let lastObsSignature = '';
     let repeatCount = 0;
+    let continueFromCurrentPage = false;
 
     while (stepCount < maxSteps) {
-      // Return to home for a clean start.
-      await safeGoto(controller, homeUrl);
-      await sleep(STEP_DELAY);
+      if (continueFromCurrentPage) {
+        await controller.waitForStable(STEP_DELAY);
+      } else {
+        // Return to home for a clean start.
+        await safeGoto(controller, homeUrl);
+        await sleep(STEP_DELAY);
+      }
+      continueFromCurrentPage = false;
 
       // Discover what's on the page RIGHT NOW.
       const beforeSnap = await controller.currentSnapshot().catch(() => undefined);
@@ -134,7 +141,13 @@ export async function recordWalkthrough(options: WalkthroughOptions): Promise<Wa
 
       // Find the next safe, untried action to perform (with repetition guard).
       const candidate = findNextAction(actions, triedActions, lastObsSignature, repeatCount);
-      if (!candidate) break; // nothing left to do
+      if (!candidate) {
+        if (controller.currentUrl() !== homeUrl && stepCount < maxSteps) {
+          continueFromCurrentPage = false;
+          continue; // next iteration will return home and try again
+        }
+        break; // nothing left to do
+      }
 
       triedActions.add(candidate.label.toLowerCase());
       await sleep(PRE_PAUSE);
@@ -200,15 +213,19 @@ export async function recordWalkthrough(options: WalkthroughOptions): Promise<Wa
       events.push({ step: `step-${stepCount}`, action: actionLabel, result: performed ? 'performed' : 'not-found', observations, timestampMs: elapsed() });
       stepCount++;
 
-      // Update repetition tracking: compare this step's observation signature
-      // to the previous one. If identical, increment the counter; if different,
-      // reset it. The guard uses this to break out of repetitive browsing.
+      // Update repetition tracking.
       const obsSignature = observations.join(';');
       if (obsSignature === lastObsSignature) {
         repeatCount++;
       } else {
         lastObsSignature = obsSignature;
         repeatCount = 1;
+      }
+
+      // If we just performed a flow action (cart, checkout, finish, etc.) and the
+      // URL changed, stay on this page next iteration so we can continue the funnel.
+      if (performed && afterUrl !== beforeUrl && isFlowAction(actionLabel)) {
+        continueFromCurrentPage = true;
       }
 
       // Flush a chapter every 2-3 actions for natural narration pacing.
