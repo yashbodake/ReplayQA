@@ -243,6 +243,39 @@ export async function recordWalkthrough(options: WalkthroughOptions): Promise<Wa
       }
     }
 
+    // If there's still room and we haven't tried logout yet, perform it as a
+    // clean terminal action so the demo ends with a sign-out.
+    if (stepCount < maxSteps) {
+      const finalActions = await controller.currentActions().catch(() => []);
+      const logoutAction = finalActions.find(
+        (a) => /\blog\s*out\b/i.test(a.label) && !triedActions.has(a.label.toLowerCase()),
+      );
+      if (logoutAction) {
+        triedActions.add(logoutAction.label.toLowerCase());
+        try {
+          const clicked = await controller.click(logoutAction.selector, { timeout: 4000 });
+          if (clicked) {
+            await controller.waitForStable(3000);
+            await sleep(RESULT_HOLD);
+            chapterActions.push(logoutAction.label);
+            chapterVerified.push({
+              action: logoutAction.label,
+              observations: ['the user signed out'],
+              fillSucceeded: false,
+            });
+            events.push({
+              step: `step-${stepCount}`,
+              action: logoutAction.label,
+              result: 'performed',
+              observations: ['the user signed out'],
+              timestampMs: elapsed(),
+            });
+            stepCount++;
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
     // Flush remaining.
     if (chapterActions.length > 0) {
       chapters.push({
