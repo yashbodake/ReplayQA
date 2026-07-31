@@ -9,6 +9,7 @@ import { buildContext } from './context.js';
 import { runProbes, TransitionGraphBuilder } from '../probes/index.js';
 import { buildJourneys, renderFlowReport } from '../flow/index.js';
 import type { DiscoveryOptions } from './phases.js';
+import { cleanDiscoveryArtifacts } from '../run/clean.js';
 
 const DEFAULT_MAX_PAGES = 8;
 const DEFAULT_MAX_PROBES_PER_STATE = 5;
@@ -35,9 +36,12 @@ export async function runDiscovery(
   options: DiscoveryOptions = {}
 ): Promise<DiscoveryResult> {
   const config = findConfigSync();
+  const outputDir = options.outputDir ?? resolve(config.outputDir, 'discovery');
+  cleanDiscoveryArtifacts(outputDir);
+  
   const ctx = buildContext({
     targetUrl,
-    outputDir: options.outputDir ?? resolve(config.outputDir, 'discovery'),
+    outputDir,
     config,
     logger: options.logger,
     headed: options.headed,

@@ -20,6 +20,8 @@ export interface LoopOptions extends RepairOptions {
   cwd?: string;
   /** Progress callback (fires after each attempt completes). */
   onAttempt?: (attempt: RepairAttempt) => void;
+  /** Scenario ID for video preservation (passed through to executeTest). */
+  scenarioId?: string;
 }
 
 const DEFAULT_MAX_REPAIRS = 3;
@@ -62,7 +64,12 @@ export async function generateUntilPass(args: {
     } else {
       writeFileSync(args.options.testFile, validation.code + '\n', 'utf-8');
       const t0 = Date.now();
-      const res = await executeTest(args.options.testFile, { cwd, headed: args.options.headed });
+      const res = await executeTest(args.options.testFile, {
+        cwd,
+        headed: args.options.headed,
+        credentials: args.options.credentials,
+        scenarioId: args.options.scenarioId,
+      });
       const durationMs = Date.now() - t0;
       execution = {
         passed: res.passed,
@@ -112,6 +119,7 @@ export async function generateUntilPass(args: {
         apiKey: args.options.apiKey,
         baseUrl: args.options.baseUrl,
         model: args.options.model,
+        credentials: args.options.credentials,
       },
     });
     attempt.repair = repair.explanation; // explains the fix that produced the next attempt

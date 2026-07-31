@@ -284,6 +284,13 @@ src/walkthrough/              Interactive Walkthrough Recorder (v0.9.1)
 ├── walkthrough.ts          5-step linear demo (login → create → search → edit → delete)
 └── cli.ts                  `npm run demo`
 ```
+
+```
+src/narration/audio/          Audio Experience Layer (v1.0)
+├── style.ts               NarrationStyle (provider-agnostic: pacing + register)
+├── music.ts               BackgroundMusicManager (library/playlist + shuffle)
+└── mixer.ts               AudioMixer (multi-track + sidechain ducking via ffmpeg)
+```
 ```
 
 ### Key Design Principles
@@ -323,6 +330,15 @@ REASONING_MODEL=gpt-oss:120b                   # or gpt-oss-120b, glm-5.2, etc.
 | `NARRATION_AUDIO_BITRATE` | `192k` | AAC audio bitrate. |
 | `NARRATION_RENDER_POLICY` | `default` | `default`, `synced`, or `walkthrough` (no-loop for real footage). |
 | `NARRATION_ENABLED` | `true` | Set `false` to skip narration in the full pipeline. |
+| `NARRATION_STYLE` | `professional` | `professional` / `executive` / `educational` / `developer` (provider-agnostic pacing/register). |
+| `NARRATION_MUSIC` | `false` | Enable background music under narration. |
+| `NARRATION_MUSIC_DIR` | `assets/music/` | Music library directory (scanned for `.mp3`, `.m4a`, etc.). |
+| `NARRATION_MUSIC_FILE` | (auto-pick) | Force a specific music track (overrides dir scan). |
+| `NARRATION_MUSIC_VOLUME` | `0.15` | Music volume (0–1, subtle). |
+| `NARRATION_MUSIC_FADE_IN` | `2` | Music fade-in seconds. |
+| `NARRATION_MUSIC_FADE_OUT` | `3` | Music fade-out seconds. |
+| `NARRATION_DUCKING_DB` | `-12` | How much music ducks under narration (dB). |
+| `NARRATION_MUSIC_SHUFFLE` | `true` | Shuffle track selection from the library. |
 
 ### `replayqa.config.json`
 
@@ -418,6 +434,7 @@ tests/replayqa-generated.spec.ts   the generated Playwright test
 | v0.8 | Narrated summary | `ReplayQA-Summary.mp4` — AI narration from structured artifacts (no video analysis) |
 | v0.9 | Cinematic rendering | Kokoro TTS, 1920×1080@30fps H.264, configurable render policy, mode-driven recording |
 | v0.9.1 | Cinematic demo | `npm run demo` — interactive walkthrough recorder (login + create/search/edit/delete) + app-narrator + outcome verification |
+| v1.0 | Audio experience | NarrationStyle (provider-agnostic), BackgroundMusicManager (library/playlist), AudioMixer (multi-track + sidechain ducking) |
 
 ---
 

@@ -4,6 +4,29 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from '
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import type { TTSOptions, TTSProvider, TTSResult } from './provider.js';
+import type { NarrationStyle } from '../audio/style.js';
+
+/**
+ * Map a provider-agnostic NarrationStyle to Edge-TTS-specific voice + rate.
+ * This is the ONLY place Edge voice IDs appear for style mapping.
+ */
+function styleToParams(style: NarrationStyle): { voice: string; rate: string } {
+  const registerToVoice: Record<string, string> = {
+    neutral: 'en-US-AriaNeural',
+    warm: 'en-US-AriaNeural',
+    authoritative: 'en-US-DavisNeural',
+    crisp: 'en-US-GuyNeural',
+  };
+  const pacingToRate: Record<string, string> = {
+    slow: '-5%',
+    normal: '+0%',
+    fast: '+10%',
+  };
+  return {
+    voice: registerToVoice[style.register] ?? 'en-US-AriaNeural',
+    rate: pacingToRate[style.pacing] ?? '+0%',
+  };
+}
 
 /**
  * EdgeTTSProvider — the first concrete TTS provider (Refinement #4).
@@ -39,8 +62,10 @@ export class EdgeTTSProvider implements TTSProvider {
   }
 
   async synthesize(text: string, opts?: TTSOptions): Promise<TTSResult> {
-    const voice = opts?.voice ?? this.defaultVoice;
-    const rate = opts?.rate ?? this.defaultRate;
+    // Map the NarrationStyle (if provided) to Edge-TTS voice + rate.
+    const styleParams = opts?.style ? styleToParams(opts.style) : null;
+    const voice = opts?.voice ?? styleParams?.voice ?? this.defaultVoice;
+    const rate = opts?.rate ?? styleParams?.rate ?? this.defaultRate;
     const cacheKey = hashKey(text, voice, rate);
     const cacheFile = resolve(this.cacheDir, `${cacheKey}.mp3`);
 

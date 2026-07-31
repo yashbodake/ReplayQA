@@ -342,6 +342,16 @@ export class BrowserController {
           style.display !== 'none'
         );
       };
+      // Derive a human-readable label from a CSS class for icon-only elements.
+      // e.g. "shopping_cart_link" → "Shopping Cart", "logout-btn" → "Logout"
+      const labelFromClass = (el: Element): string => {
+        const cls = (el.className || '').toString().trim();
+        if (!cls) return '';
+        const words = cls.split(/[-_\s]+/)
+          .filter((w: string) => w && !/^(link|btn|button|nav|icon|el|item|a|div)$/i.test(w))
+          .join(' ');
+        return words ? words.replace(/\b\w/g, (c: string) => c.toUpperCase()) : '';
+      };
       const seen = new Set<string>();
       const out: Array<{ label: string; type: string; role?: string; name?: string; placeholder?: string; labelText?: string; css?: string }> = [];
       const push = (entry: typeof out[0]) => {
@@ -376,8 +386,31 @@ export class BrowserController {
           if (url.origin !== location.origin) return; // external
         } catch { return; }
         const label = (el.textContent || '').trim() || el.getAttribute('aria-label') || '';
-        const clean = label.split('\n')[0].trim().slice(0, 80);
+        // If the link has no text or aria-label (e.g. an icon-only link like
+        // SauceDemo's cart icon: <a class="shopping_cart_link">), derive a label
+        // from its CSS class so it becomes detectable for the walkthrough recorder.
+        const finalLabel = label || labelFromClass(el);
+        const clean = finalLabel.split('\n')[0].trim().slice(0, 80);
         if (clean) push({ label: clean, type: 'link', role: 'link', name: clean });
+      });
+
+      // 2b. SPA-style links WITHOUT href (e.g. <a class="shopping_cart_link">).
+      // Many SPAs use click handlers on <a> tags without an href attribute.
+      // These are invisible to the a[href] selector above. We scan them here
+      // using the labelFromClass helper to derive a human-readable label.
+      document.querySelectorAll('a:not([href])').forEach((el) => {
+        if (!isVisible(el)) return;
+        const label = (el.textContent || '').trim() || el.getAttribute('aria-label') || '';
+        const finalLabel = label || labelFromClass(el);
+        if (!finalLabel) return;
+        const clean = finalLabel.split('\n')[0].trim().slice(0, 80);
+        if (clean) {
+          const cls = (el.className || '').toString().trim().split(/\s+/)[0];
+          // For href-less SPA links, use the CSS class as the selector (not
+          // role+name, since the element has no accessible name). The post-map
+          // at the end of this function picks up the css field.
+          push({ label: clean, type: 'link', css: cls ? `${el.tagName.toLowerCase()}.${cls}` : undefined });
+        }
       });
 
       // 3. Text Inputs (text/search/textarea, not password/readonly/disabled)

@@ -13,3 +13,18 @@ playwright/.cache/
 .venv-kokoro/
 .bin/
 .zcode/
+
+# Generated test files (per-scenario)
+tests/replayqa-generated-TC-*.spec.ts
+
+# Temp/generated scripts
+gen-all.ts
+
+# Generated docs
+docs/superpowers/
+
+# Unit test scratch
+unit/
+
+# Video output
+videos/

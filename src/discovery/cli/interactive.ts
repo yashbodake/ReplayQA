@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from '
 import { runDiscovery } from '../core/discover.js';
 import { loadObservations, reason } from '../reasoning-lab/index.js';
 import { loadPlannerInput, generatePlan, renderMarkdown } from '../qa-planning-lab/index.js';
-import { pickTopScenario, renderSummary } from '../run/summary.js';
+import { pickTopScenario, renderSummary, selectScenarios } from '../run/summary.js';
 import { generateTest } from '../run/generate.js';
 import {
   generateUntilPass,
@@ -287,50 +287,91 @@ ${RESET}`);
           ok(`  ${p.plan.functionalScenarios.length} scenarios generated (${(p.plan.confidence * 100).toFixed(0)}% confidence)`);
         } catch (e) { err(`Planning failed: ${e instanceof Error ? e.message : String(e)}`); break; }
 
-        // 4. Review + approve
-        const scenario = pickTopScenario(plan);
+        // 4. Review + scenario selection
+        const scenarios = await selectScenarios(plan, 5);
+        if (scenarios.length === 0) { warn('No testable scenario found'); break; }
         line('');
-        rule();
-        console.log(renderSummary(plan, scenario));
-        rule();
+        info(`Selected ${scenarios.length} scenario${scenarios.length === 1 ? '' : 's'}: ${scenarios.map(s => s.id).join(', ')}`);
 
-        if (!scenario) { warn('No testable scenario found'); break; }
-        const approved = await confirm('\nGenerate this test?', true);
-        if (!approved) { info('Aborted. Artifacts preserved.'); break; }
-
-        // 5. Generate + execute
-        ok('Step 4/5: Generating Playwright test...');
+        // 5. Generate + execute (loop over selected scenarios)
+        ok('Generating Playwright tests...');
         try {
           const observations = await loadObservations(artifactsDir);
-          const generated = await generateTest(targetUrl, observations, reasoningResult, scenario, { apiKey });
-          const testFile = resolve(process.cwd(), 'tests/replayqa-generated.spec.ts');
+          let lastScenario = scenarios[0];
+          let lastOutcome: { passed: boolean; firstPassSuccess: boolean; repairAttemptsUsed: number; attempts: unknown[] } | undefined;
 
-          ok('Step 5/5: Executing (with reliability loop)...');
-          const outcome = await generateUntilPass({
-            initialCode: generated.code,
-            scenario,
-            observations,
-            options: { apiKey, maxRepairAttempts: 3, testFile, headed,
-              onAttempt: (a: RepairAttempt) => console.log(`    attempt ${a.attemptNumber}: ${a.execution.passed ? `${GREEN}✓ passed${RESET}` : `${RED}✗ ${a.execution.diagnostics?.errorType ?? 'failed'}${RESET}`}`),
-            },
-          });
+          for (const scenario of scenarios) {
+            header(`Generating ${scenario.id}: ${scenario.title}`);
+            const generated = await generateTest(targetUrl, observations, reasoningResult, scenario, { apiKey, credentials: creds });
+            // Per-scenario test file: tests/replayqa-generated-{scenarioId}.spec.ts
+            const safeId = scenario.id.replace(/[^a-zA-Z0-9-]/g, '-');
+            const testFile = resolve(process.cwd(), `tests/replayqa-generated-${safeId}.spec.ts`);
 
-          line('');
-          if (outcome.passed) {
-            ok(`Test PASSED ${outcome.firstPassSuccess ? '(first try!)' : `(after ${outcome.repairAttemptsUsed} repair${outcome.repairAttemptsUsed === 1 ? '' : 's'})`}`);
-          } else {
-            err(`Test FAILED after ${outcome.attempts.length} attempts`);
+            ok('Executing (with reliability loop)...');
+            const outcome = await generateUntilPass({
+              initialCode: generated.code,
+              scenario,
+              observations,
+              options: { apiKey, maxRepairAttempts: 3, testFile, headed, credentials: creds, scenarioId: scenario.id,
+                onAttempt: (a: RepairAttempt) => console.log(`    attempt ${a.attemptNumber}: ${a.execution.passed ? `${GREEN}✓ passed${RESET}` : `${RED}✗ ${a.execution.diagnostics?.errorType ?? 'failed'}${RESET}`}`),
+              },
+            });
+
+            line('');
+            if (outcome.passed) {
+              ok(`Test PASSED ${outcome.firstPassSuccess ? '(first try!)' : `(after ${outcome.repairAttemptsUsed} repair${outcome.repairAttemptsUsed === 1 ? '' : 's'})`}`);
+            } else {
+              err(`Test FAILED after ${outcome.attempts.length} attempts`);
+            }
+
+            // Record per-scenario reliability.
+            recordRun(toRunRecord({ targetUrl, scenarioTitle: scenario.title, outcome }));
+            lastScenario = scenario;
+            lastOutcome = outcome;
           }
 
-          // Reliability report
-          recordRun(toRunRecord({ targetUrl, scenarioTitle: scenario.title, outcome }));
-          const html = renderReliabilityReport({ scenario, outcome, aggregate: aggregate(loadMetrics()), appName: reasoningResult.applicationType });
+          // Reliability report (for the last scenario)
+          const html = renderReliabilityReport({ scenario: lastScenario, outcome: lastOutcome as never, aggregate: aggregate(loadMetrics()), appName: reasoningResult.applicationType });
           writeFileSync(resolve(artifactsDir, 'reliability-report.html'), html, 'utf-8');
 
           line('');
           info(`Reliability report: ${resolve(artifactsDir, 'reliability-report.html')}`);
           if (existsSync(resolve(process.cwd(), 'reports', 'index.html')))
             info(`Execution dashboard: ${resolve(process.cwd(), 'reports', 'index.html')}`);
+
+          // ── NARRATION (v1.0) ─────────────────────────────────────────────
+          // Produce the narrated summary video with background music + TTS.
+          // This was missing from the interactive CLI — the orchestrator had
+          // it but the interactive path ran its own pipeline without narrate().
+          if (await confirm('Generate narrated summary video?', true)) {
+            header('Generating Narration');
+
+            // Ask for narration preferences
+            const styleChoice = await ask('Narration style (professional/executive/educational/developer)', 'professional');
+            const wantMusic = await confirm('Add background music?', true);
+            const musicDir = wantMusic ? await ask('Music directory', resolve(process.cwd(), 'music')) : '';
+
+            ok('Generating narrated summary...');
+            try {
+              const { narrate } = await import('../../narration/narrate.js');
+              const { getStyle } = await import('../../narration/audio/style.js');
+              const narrationResult = await narrate({
+                apiKey,
+                artifactsDir,
+                reportDir: resolve(process.cwd(), 'reports'),
+                narrationStyle: getStyle(styleChoice),
+                music: wantMusic ? { enabled: true, musicDir: musicDir || undefined } : { enabled: false },
+              });
+              if (narrationResult.ok) {
+                ok(`Narrated summary: ${narrationResult.summaryPath}` +
+                  (narrationResult.durationMs ? ` (${(narrationResult.durationMs / 1000).toFixed(1)}s)` : ''));
+              } else {
+                warn(`Narration skipped: ${narrationResult.error}`);
+              }
+            } catch (e) {
+              warn(`Narration failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
         } catch (e) {
           if (e instanceof LoginFailedError) reportLoginFailure(e);
           else err(`Pipeline failed: ${e instanceof Error ? e.message : String(e)}`);

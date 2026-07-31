@@ -29,6 +29,9 @@ const MAX_DEPTH = 8;
  * action label and the observed changes. Caps at MAX_JOURNEYS / MAX_DEPTH.
  */
 export function buildJourneys(graph: FlowGraph): Journey[] {
+  // Reset counter so each run gets deterministic journey IDs starting from 0.
+  let journeys_counter = 0;
+  
   const nodeMap = new Map<string, GraphNode>();
   for (const n of graph.nodes) nodeMap.set(n.stateId, n);
 
@@ -45,13 +48,38 @@ export function buildJourneys(graph: FlowGraph): Journey[] {
 
   const journeys: Journey[] = [];
 
+  function toJourney(edges: TransitionEdge[]): Journey {
+    const steps: JourneyStep[] = edges.map((e) => ({
+      from: e.from,
+      fromLabel: nodeMap.get(e.from)?.label ?? e.from,
+      action: e.action,
+      to: e.to,
+      toLabel: nodeMap.get(e.to)?.label ?? e.to,
+      changes: e.changes ?? [],
+    }));
+
+    // One-line description
+    const parts: string[] = [];
+    for (const s of steps) {
+      if (parts.length === 0) parts.push(s.fromLabel);
+      parts.push(s.action, s.toLabel);
+    }
+
+    return {
+      id: `journey-${journeys_counter++}`,
+      steps,
+      description: parts.join(' → '),
+      length: steps.length,
+    };
+  }
+
   function dfs(nodeId: string, path: TransitionEdge[], visited: Set<string>): void {
     if (journeys.length >= MAX_JOURNEYS) return;
     if (path.length >= MAX_DEPTH) return;
 
     const outEdges = edgesBySource.get(nodeId) ?? [];
     if (outEdges.length === 0 && path.length > 0) {
-      journeys.push(toJourney(path, nodeMap));
+      journeys.push(toJourney(path));
       return;
     }
     let extended = false;
@@ -61,7 +89,7 @@ export function buildJourneys(graph: FlowGraph): Journey[] {
       dfs(edge.to, [...path, edge], new Set([...visited, edge.to]));
     }
     if (!extended && path.length > 0) {
-      journeys.push(toJourney(path, nodeMap));
+      journeys.push(toJourney(path));
     }
   }
 
@@ -71,30 +99,3 @@ export function buildJourneys(graph: FlowGraph): Journey[] {
 
   return journeys;
 }
-
-function toJourney(edges: TransitionEdge[], nodeMap: Map<string, GraphNode>): Journey {
-  const steps: JourneyStep[] = edges.map((e) => ({
-    from: e.from,
-    fromLabel: nodeMap.get(e.from)?.label ?? e.from,
-    action: e.action,
-    to: e.to,
-    toLabel: nodeMap.get(e.to)?.label ?? e.to,
-    changes: e.changes ?? [],
-  }));
-
-  // One-line description
-  const parts: string[] = [];
-  for (const s of steps) {
-    if (parts.length === 0) parts.push(s.fromLabel);
-    parts.push(s.action, s.toLabel);
-  }
-
-  return {
-    id: `journey-${journeys_counter++}`,
-    steps,
-    description: parts.join(' → '),
-    length: steps.length,
-  };
-}
-
-let journeys_counter = 0;

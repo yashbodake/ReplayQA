@@ -1,37 +1,35 @@
 import { test, expect } from '../src/runner/index.js';
 
-test('TC-001 Successful login with valid credentials', async ({ page }) => {
-  // Navigate to the application
-  await page.goto('http://localhost:8080/');
-  await page.waitForLoadState('networkidle');
+test('TC-001 Successful account creation with valid data', async ({ page }) => {
+  // Navigate to the Welcome page
+  await page.goto('https://phone-book-yrap.vercel.app/');
 
-  // Wait for the login form inputs to be visible (the form may be already present)
-  const usernameInput = page.locator('input[name="loginUsername"]');
-  const passwordInput = page.locator('input[name="loginPassword"]');
-  await usernameInput.waitFor({ state: 'visible', timeout: 15000 });
-  await passwordInput.waitFor({ state: 'visible', timeout: 15000 });
+  // Open the Sign‑up form
+  await page.getByRole('link', { name: /sign up/i }).click();
 
-  // Verify visibility using expect (assertion style)
-  await expect(usernameInput).toBeVisible();
-  await expect(passwordInput).toBeVisible();
+  // Ensure the registration form is visible (heading appears)
+  await expect(page.getByRole('heading', { name: /create account/i })).toBeVisible({ timeout: 5000 });
 
-  // Fill in login credentials
-  await usernameInput.fill('validUser');
-  await passwordInput.fill('ValidPass123');
+  // Locate registration fields using role‑based selectors and scope to the first match
+  const usernameInput = page.getByRole('textbox', { name: /username/i }).first();
+  const emailInput = page.getByRole('textbox', { name: /email/i }).first();
+  const passwordInput = page.getByLabel('Password').first();
+  const confirmPasswordInput = page.getByLabel('Confirm Password').first();
 
-  // Click the submit button inside the login form (the second "Sign In" button)
-  const submitButton = page.getByRole('button', { name: 'Sign In' }).last();
-  await expect(submitButton).toBeVisible();
-  await submitButton.click();
+  // Wait for the username field to be visible before interacting
+  await expect(usernameInput).toBeVisible({ timeout: 5000 });
 
-  // Wait for navigation to the contacts page
-  await page.waitForURL('**/contacts**', { timeout: 15000 });
+  // Fill in registration fields with valid data
+  const uniqueSuffix = Date.now().toString();
+  await usernameInput.fill(`testuser${uniqueSuffix}`);
+  await emailInput.fill(`testuser${uniqueSuffix}@example.com`);
+  await passwordInput.fill('Password123!');
+  await confirmPasswordInput.fill('Password123!');
 
-  // Verify that the user is redirected to the My Contacts page
-  const heading = page.getByRole('heading', { name: 'My Contacts' }).first();
-  await expect(heading).toBeVisible();
+  // Submit the registration form
+  await page.getByRole('button', { name: /create account/i }).click();
 
-  // Verify that the Add Contact button is visible
-  const addContactButton = page.getByRole('button', { name: 'Add Contact' }).first();
-  await expect(addContactButton).toBeVisible();
+  // Verify that the UI transitions to the "My Contacts" page
+  await expect(page.getByRole('heading', { name: /my contacts/i })).toBeVisible();
+  await expect(page.getByRole('button', { name: /add contact/i })).toBeVisible();
 });

@@ -84,11 +84,15 @@ async function main(): Promise<void> {
   console.log(`Benchmark: ${iterations} iterations · max ${maxRepairs} repairs · ${scenarios.length} scenarios`);
   console.log(`Target: ${targetUrl}\n`);
 
+  const credentials = process.env.REPLAYQA_DISCOVERY_USERNAME && process.env.REPLAYQA_DISCOVERY_PASSWORD
+    ? { username: process.env.REPLAYQA_DISCOVERY_USERNAME, password: process.env.REPLAYQA_DISCOVERY_PASSWORD }
+    : undefined;
+
   for (let i = 0; i < iterations; i++) {
     const scenario = scenarios[i % scenarios.length] as TestScenario;
     console.log(`=== Iteration ${i + 1}/${iterations} — "${scenario.title}" [${scenario.priority}] ===`);
 
-    const initial = await generateTest(targetUrl, observations, reasoning, scenario, { apiKey });
+    const initial = await generateTest(targetUrl, observations, reasoning, scenario, { apiKey, credentials });
     const outcome = await generateUntilPass({
       initialCode: initial.code,
       scenario,
@@ -97,6 +101,7 @@ async function main(): Promise<void> {
         apiKey,
         maxRepairAttempts: maxRepairs,
         testFile,
+        credentials,
         onAttempt: (a) =>
           console.log(
             `  attempt ${a.attemptNumber} [${a.source}]: ${a.execution.passed ? 'PASS' : 'FAIL'}${

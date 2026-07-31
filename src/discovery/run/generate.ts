@@ -1,5 +1,7 @@
 import type { Observations } from '../reasoning-lab/collect.js';
 import type { TestScenario } from '../qa-planning-lab/types.js';
+import type { DiscoveryCredentials } from '../../config/types.js';
+import { buildCredentialPromptInstructions } from './credentials.js';
 
 /**
  * Ask the LLM to write a SINGLE Playwright test for the chosen scenario,
@@ -13,6 +15,7 @@ export interface GenerateOptions {
   apiKey: string;
   baseUrl?: string;
   model?: string;
+  credentials?: DiscoveryCredentials;
 }
 
 export interface GenerateOutcome {
@@ -23,21 +26,12 @@ export interface GenerateOutcome {
 
 const IMPORT_LINE = "import { test, expect } from '../src/runner/index.js';";
 
-export async function generateTest(
-  targetUrl: string,
-  observations: Observations,
-  reasoning: unknown,
-  scenario: TestScenario,
-  options: GenerateOptions
-): Promise<GenerateOutcome> {
-  const baseUrl = (options.baseUrl ?? process.env.REASONING_BASE_URL ?? 'https://api.cerebras.ai/v1').replace(/\/$/, '');
-  const model = options.model ?? process.env.REASONING_MODEL ?? 'gpt-oss-120b';
-
-  const system = [
+export function buildGenerationSystemPrompt(credentials?: DiscoveryCredentials): string {
+  return [
     'You write Playwright tests in TypeScript. You will be given a JSON object',
     'with: targetUrl, scenario (the one test to implement), observations (pages',
     'ReplayQA discovered — buttons/links/forms/inputs as text), and reasoning',
-    '(ReplayQA\'s understanding of the app).',
+    "(ReplayQA's understanding of the app).",
     '',
     'Produce EXACTLY ONE test() that:',
     '  1. Navigates to the targetUrl.',
@@ -47,7 +41,7 @@ export async function generateTest(
     '     that label.',
     '  3. Ends with at least one `expect(...)` that asserts the scenario\'s',
     '     expected result.',
-    '  4. Uses safe, deterministic test data (e.g. a clearly fake name/email).',
+    ...buildCredentialPromptInstructions(credentials),
     '',
     'PLAYWRIGHT STRICT MODE (critical):',
     '  - Locators in actions/assertions must resolve to EXACTLY ONE element.',
@@ -75,6 +69,19 @@ export async function generateTest(
     'Do NOT include any other import. Do NOT use test.describe unless needed.',
     'Return ONLY the TypeScript source code — no markdown fences, no prose.',
   ].join('\n');
+}
+
+export async function generateTest(
+  targetUrl: string,
+  observations: Observations,
+  reasoning: unknown,
+  scenario: TestScenario,
+  options: GenerateOptions
+): Promise<GenerateOutcome> {
+  const baseUrl = (options.baseUrl ?? process.env.REASONING_BASE_URL ?? 'https://api.cerebras.ai/v1').replace(/\/$/, '');
+  const model = options.model ?? process.env.REASONING_MODEL ?? 'gpt-oss-120b';
+
+  const system = buildGenerationSystemPrompt(options.credentials);
 
   const user = JSON.stringify({ targetUrl, scenario, observations, reasoning }, null, 2);
 

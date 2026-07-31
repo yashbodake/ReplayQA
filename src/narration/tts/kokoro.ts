@@ -4,6 +4,35 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from '
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import type { TTSOptions, TTSProvider, TTSResult } from './provider.js';
+import type { NarrationStyle } from '../audio/style.js';
+
+/**
+ * Map a provider-agnostic NarrationStyle to Kokoro-specific voice + speed.
+ * This is the ONLY place Kokoro voice IDs appear for style mapping — the style
+ * itself is provider-agnostic (pacing/register).
+ */
+function styleToParams(style: NarrationStyle): { voice: string; speed: number } {
+  // Register → voice mapping (Kokoro voices).
+  // NOTE: af_nicole is intentionally excluded — it's intrinsically ~50% slower
+  // than other voices at the same speed setting, making it unsuitable for
+  // narration. af_heart provides the warm register at a normal pace.
+  const registerToVoice: Record<string, string> = {
+    neutral: 'af_sarah',
+    warm: 'af_heart',
+    authoritative: 'af_sarah',
+    crisp: 'am_michael',
+  };
+  // Pacing → speed multiplier. Wider gaps so the difference is audible.
+  const pacingToSpeed: Record<string, number> = {
+    slow: 0.85,
+    normal: 1.0,
+    fast: 1.2,
+  };
+  return {
+    voice: registerToVoice[style.register] ?? 'af_sarah',
+    speed: pacingToSpeed[style.pacing] ?? 1.0,
+  };
+}
 
 /**
  * KokoroTTSProvider — the new default TTS engine (v0.9).
@@ -44,8 +73,11 @@ export class KokoroTTSProvider implements TTSProvider {
   }
 
   async synthesize(text: string, opts?: TTSOptions): Promise<TTSResult> {
-    const voice = opts?.voice ?? this.voice;
-    const speed = this.speed; // speed is provider-configured, not per-call
+    // Map the NarrationStyle (if provided) to Kokoro's voice + speed. Falls
+    // back to env-configured defaults if no style is passed.
+    const styleParams = opts?.style ? styleToParams(opts.style) : null;
+    const voice = opts?.voice ?? styleParams?.voice ?? this.voice;
+    const speed = styleParams?.speed ?? this.speed;
     const cacheKey = hashKey(text, voice, speed);
     const cacheFile = resolve(this.cacheDir, `${cacheKey}.mp3`);
 

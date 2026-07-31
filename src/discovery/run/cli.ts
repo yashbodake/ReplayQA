@@ -36,7 +36,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const { headed, yes, username, password } = parseArgs(process.argv.slice(2));
+  const { headed, yes, username, password, scenarios } = parseArgs(process.argv.slice(2));
   const config = findConfigSync();
   const targetUrl = normalizeUrl(positionalUrl || config.discovery?.targetUrl);
   if (!targetUrl) { console.error('Usage: npm run replayqa -- <url>'); process.exit(2); }
@@ -47,6 +47,6 @@ async function main(): Promise<void> {
     cliPassword: password,
   });
 
-  const result = await runReplayQA(targetUrl, { apiKey, headed, credentials, yes });
+  const result = await runReplayQA(targetUrl, { apiKey, headed, credentials, yes, scenarioIds: scenarios });
   process.exit(result.ok ? (result.testPassed === false ? 1 : 0) : 1);
 }

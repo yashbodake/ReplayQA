@@ -20,6 +20,12 @@ export interface TTSOptions {
   voice?: string;
   /** Speaking-rate adjustment, e.g. "+0%", "-10%". Provider-specific format. */
   rate?: string;
+  /**
+   * NarrationStyle (v1.0) — provider-agnostic delivery characteristics. Each
+   * provider maps the style's pacing/register to its own voice/rate internally.
+   * If absent, the provider uses its env-configured defaults.
+   */
+  style?: import('../audio/style.js').NarrationStyle;
 }
 
 export interface TTSResult {

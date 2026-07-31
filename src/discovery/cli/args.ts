@@ -6,10 +6,11 @@ export interface ParsedArgs {
   positionalUrl?: string;
   username?: string;
   password?: string;
+  scenarios?: string[];
 }
 
 const BOOLEAN_FLAGS = new Set(['--headed', '--watch', '--yes']);
-const VALUE_FLAGS = new Set(['--username', '--password']);
+const VALUE_FLAGS = new Set(['--username', '--password', '--scenarios']);
 
 /** Flag-aware parser. Distinguishes `--username admin` values from positionals. */
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -44,11 +45,18 @@ export function parseArgs(argv: string[]): ParsedArgs {
     positionalUrl: positionals[0],
     username: stringFlag(flags['--username']),
     password: stringFlag(flags['--password']),
+    scenarios: parseScenarios(flags['--scenarios']),
   };
 }
 
 function stringFlag(v: string | true | undefined): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+/** Parse --scenarios TC-005,TC-007 into ['TC-005', 'TC-007']. */
+function parseScenarios(v: string | true | undefined): string[] | undefined {
+  if (typeof v !== 'string' || !v) return undefined;
+  return v.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
 }
 
 /** Prepend https:// if no scheme is present. Passes file:// through untouched. */

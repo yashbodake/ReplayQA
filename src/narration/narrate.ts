@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'nod
 import { resolve, join } from 'node:path';
 import { loadNarrationContext } from './context.js';
 import { planChapters } from './planner/index.js';
-import { generateScript } from './script/index.js';
 import { generateAppScript } from './app-script/index.js';
 import { toSpeakableText } from './script/plain-text.js';
 import { checkAccuracy, checkObservationGrounding, auditVisualMatch } from './audit/index.js';
@@ -10,6 +9,10 @@ import { getTTSProvider } from './tts/index.js';
 import { defaultSummaryPath, renderSummary, loadRenderConfig, getRenderPolicy } from './render/index.js';
 import { renderNarrationSection, injectNarrationIntoReport } from '../reporter/narration-section.js';
 import type { NarrationLlmOptions } from './types.js';
+import type { NarrationStyle } from './audio/style.js';
+import type { MusicConfig, AudioTrack } from './audio/index.js';
+import { getStyle } from './audio/style.js';
+import { BackgroundMusicManager, loadMusicConfig, AudioMixer } from './audio/index.js';
 import type { RenderPolicy } from './render/policy.js';
 import type { TTSProvider } from './tts/provider.js';
 
@@ -37,6 +40,10 @@ export interface NarrateOptions {
     videoPath: string;
     chapters: import('../walkthrough/walkthrough.js').WalkthroughChapter[];
   };
+  /** Override the narration style (default: from NARRATION_STYLE env). */
+  narrationStyle?: NarrationStyle;
+  /** Override background music config (default: from NARRATION_MUSIC env). */
+  music?: Partial<MusicConfig>;
 }
 
 export interface NarrateResult {
@@ -83,10 +90,11 @@ export async function narrate(options: NarrateOptions): Promise<NarrateResult> {
     // 1 ── Aggregate context (the sole script input — Refinement #3).
     const ctx = await loadNarrationContext(artifactsDir);
 
-    // 2 ── Chapters + script. In DEMO mode (v0.9.1) the walkthrough chapters
-    //    drive everything: the app-narrator speaks about the application over
-    //    the real walkthrough footage. Otherwise the process-narrator + planner
-    //    describe ReplayQA's run over the test-execution clip.
+    // 2 ── Chapters + script. ALWAYS use the app-narrator (storytelling tone)
+    //    for natural narration. If walkthrough chapters are available (demo
+    //    mode), use those. Otherwise, build chapters from the timeline events
+    //    via the planner. The old process-narrator is kept as a fallback when
+    //    the LLM is unavailable.
     const demoMode = Boolean(options.walkthrough);
     let scriptMarkdown: string;
     let scriptSource: 'llm' | 'fallback';
@@ -94,6 +102,7 @@ export async function narrate(options: NarrateOptions): Promise<NarrateResult> {
     let reportChapters: { index: number; title: string; start: number; duration: number }[];
 
     if (demoMode && options.walkthrough) {
+      // Walkthrough chapters available — use them directly.
       const wtChapters = options.walkthrough.chapters;
       const appScript = await generateAppScript(ctx, wtChapters, {
         apiKey: options.apiKey,
@@ -105,23 +114,40 @@ export async function narrate(options: NarrateOptions): Promise<NarrateResult> {
       reportChapters = wtChapters.map((c, i) => ({
         index: i,
         start: c.start,
-        // Estimate spoken duration per chapter by action count (each action ~3s on screen).
         duration: Math.max(4, c.actions.length * 3),
         title: c.title || `Chapter ${i + 1}`,
       }));
-      // Persist the app script + the walkthrough-derived chapter plan.
       writeRaw(narrationDir, 'script.md', scriptMarkdown);
       writeJSON(narrationDir, 'narration.json', reportChapters);
     } else {
+      // No walkthrough — build chapters from timeline + use app-narrator for
+      // natural storytelling tone (not the old process-narrator).
       const chapters = planChapters(ctx);
       writeJSON(narrationDir, 'narration.json', chapters);
-      const script = await generateScript(ctx, chapters, {
+
+      // Convert planner chapters to the WalkthroughChapter shape the
+      // app-narrator expects (it needs actions + verified observations).
+      const appChapters = chapters.map((c) => ({
+        index: c.index,
+        title: c.title,
+        start: c.start,
+        actions: c.evidence.facts.actions
+          ? (c.evidence.facts.actions as string[])
+          : [c.evidence.summary],
+        verified: [{
+          action: c.evidence.summary,
+          observations: c.evidence.summary ? [c.evidence.summary] : [],
+          fillSucceeded: false,
+        }],
+      }));
+
+      const appScript = await generateAppScript(ctx, appChapters, {
         apiKey: options.apiKey,
         ...(options.llm ?? {}),
       });
-      scriptMarkdown = script.markdown;
-      scriptSource = script.source;
-      scriptModel = script.model;
+      scriptMarkdown = appScript.markdown;
+      scriptSource = appScript.source;
+      scriptModel = appScript.model;
       reportChapters = chapters.map((c) => ({ index: c.index, start: c.start, duration: c.duration, title: c.title }));
       writeRaw(narrationDir, 'script.md', scriptMarkdown);
     }
@@ -129,14 +155,53 @@ export async function narrate(options: NarrateOptions): Promise<NarrateResult> {
     baseResult.source = scriptSource;
     void scriptModel; // surfaced via narration-meta below
 
-    // 3 ── TTS (provider-agnostic). Pass clean, speakable text — never the raw
-    //    markdown, or the voice would read "#", "**", etc.
+    // 3 ── TTS (provider-agnostic). Pass the NarrationStyle so the provider can
+    //    map pacing/register to its own voice/rate. Pass clean speakable text.
+    const narrationStyle = options.narrationStyle ?? getStyle();
     const provider = options.tts ?? getTTSProvider({ cacheDir: resolve(narrationDir, '.cache') });
     baseResult.provider = provider.name;
     const speakable = toSpeakableText(scriptMarkdown);
     writeRaw(narrationDir, 'narration.txt', speakable); // audit/debug aid
-    const ttsResult = await provider.synthesize(speakable);
+    const ttsResult = await provider.synthesize(speakable, { style: narrationStyle });
     writeFileSync(baseResult.narrationPath, ttsResult.audio);
+
+    // 3.5 ── Audio mixing (v1.0): combine narration + background music with
+    //    automatic ducking. If music is disabled (default), this is a zero-cost
+    //    no-op passthrough — the narration path is returned unchanged.
+    const musicManager = new BackgroundMusicManager(
+      options.music ? { ...loadMusicConfig(), ...options.music } : loadMusicConfig()
+    );
+    const mixer = new AudioMixer();
+    const mixTracks: AudioTrack[] = [
+      {
+        path: baseResult.narrationPath,
+        role: 'narration',
+        volume: 1.0,
+        loop: false,
+        fadeInSec: 0,
+        fadeOutSec: 0,
+        duckUnder: [],
+      },
+    ];
+    const musicTrack = musicManager.selectTrack();
+    if (musicTrack) {
+      const mc = musicManager.getConfig();
+      mixTracks.push({
+        path: musicTrack.path,
+        role: 'music',
+        volume: mc.volume,
+        loop: true,
+        fadeInSec: mc.fadeInSec,
+        fadeOutSec: mc.fadeOutSec,
+        duckUnder: ['narration'],
+        duckingDb: mc.duckingDb,
+      });
+    }
+    const mixResult = await mixer.mix({
+      tracks: mixTracks,
+      outputPath: resolve(narrationDir, 'narration-mixed.mp3'),
+      durationMs: ttsResult.durationMs,
+    });
 
     // 4 ── Render. DEMO mode uses the walkthrough video + walkthrough (no-loop)
     //    policy; otherwise the test-execution clip + the configured policy.
@@ -156,9 +221,9 @@ export async function narrate(options: NarrateOptions): Promise<NarrateResult> {
     const render = await renderSummary(
       {
         videoPath,
-        audioPath: baseResult.narrationPath,
+        audioPath: mixResult.audioPath,
         outPath: baseResult.summaryPath,
-        audioDurationMs: ttsResult.durationMs,
+        audioDurationMs: mixResult.durationMs,
         chapters: reportChapters,
       },
       { policy }
@@ -269,6 +334,9 @@ export async function narrate(options: NarrateOptions): Promise<NarrateResult> {
       preset: renderConfig.preset,
       source: scriptSource,
       model: scriptModel ?? null,
+      narrationStyle: narrationStyle.id,
+      music: musicManager.describe(),
+      audioMixed: mixResult.tracksUsed.length > 1,
       chapters: reportChapters.length,
       totalDurationMs: render.durationMs ?? null,
       audioDurationMs: render.audioDurationMs ?? null,

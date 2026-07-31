@@ -1,5 +1,7 @@
 import type { Observations } from '../../reasoning-lab/collect.js';
 import type { TestScenario } from '../../qa-planning-lab/types.js';
+import type { DiscoveryCredentials } from '../../../config/types.js';
+import { buildCredentialPromptInstructions } from '../credentials.js';
 import type {
   RepairAttempt,
   RepairDiagnostics,
@@ -21,6 +23,7 @@ export interface RepairOptions {
   apiKey: string;
   baseUrl?: string;
   model?: string;
+  credentials?: DiscoveryCredentials;
 }
 
 export interface RepairResult {
@@ -32,18 +35,8 @@ export interface RepairResult {
 const DEFAULT_BASE_URL = 'https://api.cerebras.ai/v1';
 const DEFAULT_MODEL = 'gpt-oss-120b';
 
-export async function repairAttempt(args: {
-  scenario: TestScenario;
-  observations: Observations;
-  diagnostics: RepairDiagnostics;
-  validation: StaticValidationResult;
-  history: RepairAttempt[];
-  options: RepairOptions;
-}): Promise<RepairResult> {
-  const baseUrl = (args.options.baseUrl ?? process.env.REASONING_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/$/, '');
-  const model = args.options.model ?? process.env.REASONING_MODEL ?? DEFAULT_MODEL;
-
-  const system = [
+export function buildRepairSystemPrompt(credentials?: DiscoveryCredentials): string {
+  return [
     'You repair a failing Playwright test. You will receive JSON with:',
     '  - scenario: the QA scenario the test must verify',
     '  - diagnostics: the structured failure (errorType, message, locator,',
@@ -71,7 +64,22 @@ export async function repairAttempt(args: {
     '  - Keep the import line exactly: import { test, expect } from',
     "    '../src/runner/index.js';",
     '  - Do not add code blocks or prose outside the JSON object.',
+    ...buildCredentialPromptInstructions(credentials),
   ].join('\n');
+}
+
+export async function repairAttempt(args: {
+  scenario: TestScenario;
+  observations: Observations;
+  diagnostics: RepairDiagnostics;
+  validation: StaticValidationResult;
+  history: RepairAttempt[];
+  options: RepairOptions;
+}): Promise<RepairResult> {
+  const baseUrl = (args.options.baseUrl ?? process.env.REASONING_BASE_URL ?? DEFAULT_BASE_URL).replace(/\/$/, '');
+  const model = args.options.model ?? process.env.REASONING_MODEL ?? DEFAULT_MODEL;
+
+  const system = buildRepairSystemPrompt(args.options.credentials);
 
   const user = JSON.stringify(
     {
